@@ -5,6 +5,7 @@ set -e
 # 配置变量
 HOST_PORT="8708"
 PROJECT_NAME="example.com"
+HOST_LOG_DIR="/data/logs/service/${PROJECT_NAME}"
 
 # 1. 构建新镜像
 echo "📦 构建镜像..."
@@ -15,13 +16,17 @@ echo "🛑 清理旧容器..."
 podman stop "${PROJECT_NAME}" 2>/dev/null || true
 podman rm "${PROJECT_NAME}" 2>/dev/null || true
 
-# 3. 启动新容器
+# 3. 创建日志目录
+echo "📁 创建日志目录..."
+mkdir -p "${HOST_LOG_DIR}"
+
+# 4. 启动新容器
 echo "🎯 启动新容器..."
 podman run -d \
   --name "${PROJECT_NAME}" \
   --restart=unless-stopped \
   -p "${HOST_PORT}:3001" \
-  -v "/data/logs/service/${PROJECT_NAME}:/logs" \
+  -v "${HOST_LOG_DIR}:/logs" \
   --memory=512m \
   --tmpfs /tmp:rw,noexec,nosuid,size=1024m \
   --security-opt no-new-privileges \
