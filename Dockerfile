@@ -36,16 +36,10 @@ RUN apt-get update && apt-get install -y \
     python3 \
     make \
     g++ \
-    fontconfig \
-    libvips-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# 设置字体配置环境变量
-ENV FONTCONFIG_PATH=/etc/fonts
-
-# 复制 package.json、package-lock.json、scripts (如果存在)
+# 复制 package.json、package-lock.json
 COPY package*.json ./
-COPY scripts/ ./scripts/
 
 # 设置 npm 配置以优化安装过程
 RUN npm config set registry https://registry.npmmirror.com \
