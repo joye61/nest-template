@@ -6,7 +6,6 @@
   "private": true,
   "license": "MIT",
   "scripts": {
-    "postinstall": "node ./scripts/install.mjs",
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\"",
     "start": "cross-env NODE_ENV=development nest start",
