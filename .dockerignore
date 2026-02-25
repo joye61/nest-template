@@ -84,6 +84,3 @@ jest.config*
 !tsconfig.json
 !tsconfig.build.json
 !nest-cli.json
-
-# 排除本地二进制文件
-assets/skia.node
