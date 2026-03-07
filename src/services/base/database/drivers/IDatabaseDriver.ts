@@ -166,6 +166,17 @@ export interface IDatabaseDriver {
    * @returns 连接是否正常
    */
   ping(): Promise<boolean>;
+
+  /**
+   * 执行事务（推荐方式，并发安全）
+   *
+   * 自动管理事务的开始、提交和回滚。
+   * 回调内的所有 query/execute 操作自动使用事务连接。
+   *
+   * @param callback - 事务回调函数
+   * @returns 回调函数的返回值
+   */
+  transaction<T>(callback: TransactionCallback<T>): Promise<T>;
 }
 
 /**

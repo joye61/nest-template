@@ -40,8 +40,8 @@ export class Table {
   /**
    * 最后一次操作的结果详情
    *
-   * 用于获取插入 ID、影响行数等信息。
-   * 在每次 add/adds/update/remove/upsert 操作后自动更新。
+   * 注意：在并发场景中该值可能被其他请求覆盖。
+   * 推荐直接使用 add/update/remove 等方法的返回值获取可靠结果。
    *
    * @private
    */
@@ -65,47 +65,12 @@ export class Table {
   /**
    * 获取最后一次操作的详细结果
    *
+   * 注意：并发场景中推荐直接使用写操作方法的返回值，更可靠。
+   *
    * @returns 操作结果对象，包含 type、affectedRows、insertId 等信息
-   *
-   * @example
-   * ```typescript
-   * const users = db.table('users');
-   * await users.add({ name: 'John' });
-   *
-   * const result = users.getLastResult();
-   * console.log('操作类型:', result.type); // 'insert'
-   * console.log('插入 ID:', result.insertId); // 123
-   * console.log('影响行数:', result.affectedRows); // 1
-   * ```
    */
   public getLastResult(): OperationResult | undefined {
     return this._lastOperationResult;
-  }
-
-  /**
-   * 获取最后插入记录的 ID（快捷属性）
-   *
-   * @example
-   * ```typescript
-   * await users.add({ name: 'John' });
-   * console.log('新用户 ID:', users.lastInsertId);
-   * ```
-   */
-  public get lastInsertId(): number | undefined {
-    return this._lastOperationResult?.insertId;
-  }
-
-  /**
-   * 获取最后一次操作影响的行数（快捷属性）
-   *
-   * @example
-   * ```typescript
-   * await users.update({ data: { status: 1 }, where: { age: { lt: 18 } } });
-   * console.log('更新了', users.lastAffectedRows, '条记录');
-   * ```
-   */
-  public get lastAffectedRows(): number | undefined {
-    return this._lastOperationResult?.affectedRows;
   }
 
   /**
@@ -190,10 +155,19 @@ export class Table {
    * 添加单条记录
    *
    * @param data - 要插入的数据对象
-   * @returns 是否成功（成功返回 true，失败抛出异常）
+   * @returns 操作结果（对象始终为 truthy，可直接用于 if 判断）
    *
+   * @example
+   * ```typescript
+   * // 布尔逻辑不变
+   * if (await users.add({ name: 'John' })) { ... }
+   *
+   * // 并发安全地获取插入 ID
+   * const result = await users.add({ name: 'John' });
+   * console.log('新用户 ID:', result.insertId);
+   * ```
    */
-  public async add(data: Record<string, any>): Promise<boolean> {
+  public async add(data: Record<string, any>): Promise<OperationResult> {
     return this.adds([data]);
   }
 
@@ -204,12 +178,11 @@ export class Table {
    * 所有记录的字段必须完全一致。
    *
    * @param data - 要插入的数据对象数组
-   * @returns 是否成功（成功返回 true，失败抛出异常）
-   *
+   * @returns 操作结果（对象始终为 truthy，可直接用于 if 判断）
    *
    * @throws {Error} 如果数据为空或记录字段不一致
    */
-  public async adds(data: Array<Record<string, any>>): Promise<boolean> {
+  public async adds(data: Array<Record<string, any>>): Promise<OperationResult> {
     if (!Array.isArray(data) || !data.length) {
       throw new Error(
         'Parameter error, data must be an array with length >= 1',
@@ -255,25 +228,24 @@ export class Table {
       insertId: result.insertId,
     };
 
-    return true;
+    return this._lastOperationResult;
   }
 
   /**
    * 删除记录
    *
    * @param params - 删除参数
-   * @returns 是否成功（成功返回 true，失败抛出异常）
+   * @returns 操作结果（对象始终为 truthy，可直接用于 if 判断）
    *
    * 注意事项：
    * - 如果 where 为空，会删除所有记录，请确认是否需要
-   * - 返回值永远是 true，如果要检查是否删除了记录，使用 lastAffectedRows
    * - 删除操作不可逆，建议在生产环境使用软删除（更新 status 字段）
    */
   public async remove(params: {
     where?: Where;
     order?: Record<string, any>;
     limit?: number;
-  }): Promise<boolean> {
+  }): Promise<OperationResult> {
     const { where, order, limit } = params;
 
     const { prepare, holders } = this.dialect.buildDelete({
@@ -294,7 +266,7 @@ export class Table {
       affectedRows: result.affectedRows,
     };
 
-    return true;
+    return this._lastOperationResult;
   }
 
   /**
@@ -337,19 +309,19 @@ export class Table {
    * 更新记录
    *
    * @param params - 更新参数
-   * @returns 是否成功（成功返回 true，失败抛出异常）
+   * @returns 操作结果（对象始终为 truthy，可直接用于 if 判断）
    *
    * 注意事项：
-   * - 如果没有字段需要更新（data 为空），会抛出错误
+   * - 如果没有字段需要更新（data 为空），返回 affectedRows 为 0
    * - 如果 where 为空，会更新所有记录（请谨慎使用）
-   * - 如果没有匹配到记录，lastAffectedRows 为 0（不会报错）
+   * - 如果没有匹配到记录，affectedRows 为 0（不会报错）
    */
   public async update(params: {
     data: Record<string, any>;
     where?: Where;
     order?: Record<string, any>;
     limit?: number;
-  }): Promise<boolean> {
+  }): Promise<OperationResult> {
     const { data, where, order, limit } = params;
 
     try {
@@ -372,15 +344,15 @@ export class Table {
         affectedRows: result.affectedRows,
       };
 
-      return true;
+      return this._lastOperationResult;
     } catch (error) {
-      // 如果没有字段可更新，返回成功但 affectedRows 为 0
+      // 如果没有字段可更新，返回 affectedRows 为 0
       if (error instanceof Error && error.message === 'No fields to update') {
         this._lastOperationResult = {
           type: 'update',
           affectedRows: 0,
         };
-        return true;
+        return this._lastOperationResult;
       }
       throw error;
     }
@@ -395,15 +367,14 @@ export class Table {
    * 注意：目前仅支持 MySQL，其他数据库需要在 dialect 中实现。
    *
    * @param params - UPSERT 参数
-   * @returns 是否成功（成功返回 true，失败抛出异常）
+   * @returns 操作结果（对象始终为 truthy，可直接用于 if 判断）
    *
    * @example
    * ```typescript
    * const userStats = db.table('user_stats');
    *
    * // === 基础 UPSERT ===
-   * // 如果 user_id 存在则更新，否则插入
-   * await userStats.upsert({
+   * const result = await userStats.upsert({
    *   data: {
    *     user_id: 123,
    *     login_count: 1,
@@ -412,10 +383,9 @@ export class Table {
    *   uniqueKeys: ['user_id']
    * });
    *
-   * // 检查实际执行的操作
-   * const result = userStats.getLastResult();
+   * // 直接从返回值检查操作类型（并发安全）
    * if (result.action === 'insert') {
-   *   console.log('新增了记录');
+   *   console.log('新增了记录，ID:', result.insertId);
    * } else {
    *   console.log('更新了记录');
    * }
@@ -459,7 +429,7 @@ export class Table {
     data: Record<string, any>;
     uniqueKeys: string[];
     updateData?: Record<string, any>;
-  }): Promise<boolean> {
+  }): Promise<OperationResult> {
     const { data, uniqueKeys, updateData } = params;
 
     if (!uniqueKeys || uniqueKeys.length === 0) {
@@ -503,7 +473,7 @@ export class Table {
       insertId: result.insertId,
     };
 
-    return true;
+    return this._lastOperationResult;
   }
 
   /**

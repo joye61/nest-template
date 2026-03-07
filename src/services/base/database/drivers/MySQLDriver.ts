@@ -4,6 +4,7 @@ import {
   ResultSetHeader,
   createPool,
 } from 'mysql2/promise';
+import { AsyncLocalStorage } from 'async_hooks';
 import {
   IDatabaseDriver,
   ResultHeader,
@@ -52,10 +53,13 @@ export class MySQLDriver implements IDatabaseDriver {
   readonly type = 'mysql' as const;
 
   private pool: Pool;
-  private connection?: PoolConnection; // 事务连接
+  private connection?: PoolConnection; // 事务连接（仅 begin/commit/rollback 手动模式使用）
   private readonly config: DatabaseConfig | string; // 保存配置用于重连
   private isPoolDead = false; // 连接池失效标记
   private rebuildLock: Promise<void> | null = null; // 重建锁（防止并发重建）
+
+  /** 异步上下文存储，用于 transaction() 并发隔离 */
+  private readonly transactionStore = new AsyncLocalStorage<PoolConnection>();
 
   /**
    * 创建 MySQL 连接池，支持连接字符串或配置对象。
@@ -262,7 +266,7 @@ export class MySQLDriver implements IDatabaseDriver {
     operation: () => Promise<T>,
   ): Promise<T> {
     // 如果在事务中，不能重试（事务必须使用固定连接）
-    if (this.connection) {
+    if (this.connection || this.transactionStore.getStore()) {
       return operation();
     }
 
@@ -326,7 +330,7 @@ export class MySQLDriver implements IDatabaseDriver {
    */
   async query<T = any>(sql: string, params?: any[]): Promise<T[]> {
     return this.retryOnConnectionError(async () => {
-      const executor = this.connection || this.pool;
+      const executor = this.transactionStore.getStore() || this.connection || this.pool;
       const result = await executor.query(sql, params);
       return result[0] as T[];
     });
@@ -343,7 +347,7 @@ export class MySQLDriver implements IDatabaseDriver {
    */
   async execute(sql: string, params?: any[]): Promise<ResultHeader> {
     return this.retryOnConnectionError(async () => {
-      const executor = this.connection || this.pool;
+      const executor = this.transactionStore.getStore() || this.connection || this.pool;
       const result = await executor.execute(sql, params);
       const header = result[0] as ResultSetHeader;
 
@@ -382,6 +386,10 @@ export class MySQLDriver implements IDatabaseDriver {
    * 获取一个数据库连接并开启事务。
    * 后续的 query/execute 操作会使用这个连接。
    *
+   * @deprecated 请使用 transaction() 方法代替。
+   * begin/commit/rollback 是实例级状态，在并发场景下不安全（多个请求会共享同一事务连接）。
+   * transaction() 使用 AsyncLocalStorage 实现并发隔离，推荐在所有场景使用。
+   *
    * @throws {Error} 如果事务已经开始
    */
   async begin(): Promise<void> {
@@ -397,15 +405,21 @@ export class MySQLDriver implements IDatabaseDriver {
    *
    * 提交所有更改并释放数据库连接。
    *
+   * @deprecated 请使用 transaction() 方法代替，详见 begin() 的说明。
+   *
    * @throws {Error} 如果没有活动的事务
    */
   async commit(): Promise<void> {
     if (!this.connection) {
       throw new Error('没有活动的事务可以提交');
     }
-    await this.connection.commit();
-    this.connection.release();
-    this.connection = undefined;
+    try {
+      await this.connection.commit();
+    } finally {
+      // 无论 commit 是否成功，都必须释放连接，避免连接池泄漏
+      this.connection.release();
+      this.connection = undefined;
+    }
   }
 
   /**
@@ -413,15 +427,21 @@ export class MySQLDriver implements IDatabaseDriver {
    *
    * 撤销所有更改并释放数据库连接。
    *
+   * @deprecated 请使用 transaction() 方法代替，详见 begin() 的说明。
+   *
    * @throws {Error} 如果没有活动的事务
    */
   async rollback(): Promise<void> {
     if (!this.connection) {
       throw new Error('没有活动的事务可以回滚');
     }
-    await this.connection.rollback();
-    this.connection.release();
-    this.connection = undefined;
+    try {
+      await this.connection.rollback();
+    } finally {
+      // 无论 rollback 是否成功，都必须释放连接，避免连接池泄漏
+      this.connection.release();
+      this.connection = undefined;
+    }
   }
 
   /**
@@ -437,8 +457,13 @@ export class MySQLDriver implements IDatabaseDriver {
    * ```
    */
   async close(): Promise<void> {
-    // 如果有活动的事务连接，先释放
+    // 如果有活动的事务连接，先回滚再释放
     if (this.connection) {
+      try {
+        await this.connection.rollback();
+      } catch {
+        // 忽略回滚错误（连接可能已断开）
+      }
       this.connection.release();
       this.connection = undefined;
     }
@@ -478,9 +503,13 @@ export class MySQLDriver implements IDatabaseDriver {
   }
 
   /**
-   * 执行事务（便捷方法）
+   * 执行事务（推荐方式，并发安全）
    *
-   * 自动管理事务的开始、提交和回滚。
+   * 使用 AsyncLocalStorage 为每次调用分配独立的数据库连接，
+   * 回调内的所有 query/execute 操作自动使用该事务连接。
+   * 支持多个请求并发执行事务，互不干扰。
+   *
+   * 嵌套调用时自动加入外层事务（不会创建新事务）。
    *
    * @param callback - 事务回调函数
    * @returns 回调函数的返回值
@@ -495,14 +524,26 @@ export class MySQLDriver implements IDatabaseDriver {
    * ```
    */
   async transaction<T>(callback: TransactionCallback<T>): Promise<T> {
-    await this.begin();
+    // 如果已在事务上下文中，直接执行回调（加入外层事务）
+    if (this.transactionStore.getStore()) {
+      return await callback();
+    }
+
+    const conn = await this.pool.getConnection();
     try {
-      const result = await callback();
-      await this.commit();
+      await conn.beginTransaction();
+      const result = await this.transactionStore.run(conn, () => callback());
+      await conn.commit();
       return result;
     } catch (error) {
-      await this.rollback();
+      try {
+        await conn.rollback();
+      } catch {
+        // 忽略回滚错误（连接可能已断开）
+      }
       throw error;
+    } finally {
+      conn.release();
     }
   }
 }

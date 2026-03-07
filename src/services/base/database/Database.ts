@@ -161,6 +161,7 @@ export class Database {
       host: config.host,
       port: config.port,
       user: config.user,
+      password: config.password || '',
       database: config.database,
       connectionString: config.connectionString,
       // 连接池配置
@@ -385,15 +386,7 @@ export class Database {
   public async transaction<T = any>(
     callback: () => TransactionResult<T>,
   ): Promise<T> {
-    await this.driver.begin();
-    try {
-      const result = await callback();
-      await this.driver.commit();
-      return result;
-    } catch (error) {
-      await this.driver.rollback();
-      throw error;
-    }
+    return this.driver.transaction(callback);
   }
 
   /**

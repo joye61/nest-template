@@ -18,17 +18,9 @@ export interface RedisConfig {
   database?: number;
   /** 连接超时时间（毫秒），默认 10000 */
   connectTimeout?: number;
-  /** 命令超时时间（毫秒），默认 5000 */
-  commandTimeout?: number;
-  /** 最大重试次数，默认 3 */
-  maxRetries?: number;
-  /** 重试延迟（毫秒），默认 1000 */
-  retryDelay?: number;
   /** 是否启用离线队列（连接断开时缓存命令），默认 true */
   enableOfflineQueue?: boolean;
   /** 是否启用自动重连，默认 true */
   enableAutoReconnect?: boolean;
-  /** TLS 配置 */
-  tls?: boolean;
 }
 

@@ -215,7 +215,7 @@ export class MutexLock implements OnModuleDestroy {
         record.consecutiveRenewFailures++;
         // 连续失败次数过多，停止续租
         if (record.consecutiveRenewFailures >= MutexLock.MAX_RENEW_FAILURES) {
-          this.stopAutoRenew(key, value, redisName);
+          this.stopAutoRenew(key, value);
         }
       }
     }, interval);
@@ -228,7 +228,7 @@ export class MutexLock implements OnModuleDestroy {
   /**
    * 停止自动续租（仅当 value 匹配时）
    */
-  private stopAutoRenew(key: string, value: string, redisName?: string): void {
+  private stopAutoRenew(key: string, value: string): void {
     const record = this.renewMap.get(key);
     if (!record || record.value !== value) {
       return;
@@ -266,7 +266,7 @@ export class MutexLock implements OnModuleDestroy {
     value: string,
     redisName?: string,
   ): Promise<void> {
-    this.stopAutoRenew(key, value, redisName);
+    this.stopAutoRenew(key, value);
     try {
       await this.releaseLock(key, value, redisName);
     } catch {

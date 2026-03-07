@@ -1,7 +1,7 @@
 import * as redis from 'redis';
 import type { RedisClientType } from 'redis';
 import type { RedisConfig } from './types';
-import { Log } from '../../../common/Log';
+import { Log } from 'src/common/Log';
 
 /**
  * Redis 管理类
@@ -37,9 +37,6 @@ export class Redis {
   /** 重连互斥锁（防止并发重连） */
   private reconnectLock: Promise<void> | null = null;
 
-  /** 连接是否已失效 */
-  private isConnectionDead = false;
-
   /** 健康检查定时器 */
   private healthCheckTimer: NodeJS.Timeout | null = null;
 
@@ -47,8 +44,6 @@ export class Redis {
   private initializePromise: Promise<void> | null = null;
 
   /** 常量配置 */
-  private readonly MAX_RETRIES = 3;
-  private readonly RETRY_DELAY = 1000;
   private readonly HEALTH_CHECK_INTERVAL = 30000;
 
   /**
@@ -110,13 +105,13 @@ export class Redis {
       return config; // URL 作为缓存键
     }
 
-    // 配置对象转为 JSON 字符串（排除敏感信息）
+    // 配置对象转为 JSON 字符串，包含影响连接唯一性的所有字段
     const keyConfig = {
       host: config.host,
       port: config.port,
       database: config.database || 0,
-      username: config.username ? '[SET]' : undefined,
-      password: config.password ? '[SET]' : undefined,
+      username: config.username || '',
+      password: config.password || '',
     };
 
     return JSON.stringify(keyConfig);
@@ -145,9 +140,6 @@ export class Redis {
     // 合并默认配置
     return {
       connectTimeout: 10000,
-      commandTimeout: 5000,
-      maxRetries: 3,
-      retryDelay: 1000,
       enableOfflineQueue: true,
       enableAutoReconnect: true,
       database: 0,
@@ -158,32 +150,39 @@ export class Redis {
   /**
    * 解析 Redis URL
    *
-   * 格式：redis://[username:password@]host[:port][/database]
+   * 支持格式：
+   * - redis://host
+   * - redis://host:port
+   * - redis://host:port/database
+   * - redis://:password@host:port/database（仅密码认证，最常见）
+   * - redis://username:password@host:port/database
    */
   private parseURL(url: string): RedisConfig {
-    const match = url.match(
-      /^redis:\/\/(?:([^:]+):([^@]+)@)?([^:\/]+)(?::(\d+))?(?:\/(\d+))?$/,
-    );
-
-    if (!match) {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
       throw new Error(
         `无效的 Redis URL: ${url}\n` +
           `正确格式: redis://[username:password@]host[:port][/database]`,
       );
     }
 
-    const [, username, password, host, port, database] = match;
+    if (parsed.protocol !== 'redis:') {
+      throw new Error(
+        `无效的 Redis URL 协议: ${parsed.protocol}，应为 redis:`,
+      );
+    }
+
+    const dbStr = parsed.pathname?.replace(/^\//, '');
 
     return {
-      host,
-      port: port ? parseInt(port, 10) : 6379,
-      username,
-      password,
-      database: database ? parseInt(database, 10) : 0,
+      host: parsed.hostname || 'localhost',
+      port: parsed.port ? parseInt(parsed.port, 10) : 6379,
+      username: parsed.username ? decodeURIComponent(parsed.username) : undefined,
+      password: parsed.password ? decodeURIComponent(parsed.password) : undefined,
+      database: dbStr ? parseInt(dbStr, 10) || 0 : 0,
       connectTimeout: 10000,
-      commandTimeout: 5000,
-      maxRetries: 3,
-      retryDelay: 1000,
       enableOfflineQueue: true,
       enableAutoReconnect: true,
     };
@@ -275,8 +274,6 @@ export class Redis {
       Log.v(
         `[Redis] 连接成功: ${this.config.host}:${this.config.port} (DB: ${this.config.database})`,
       );
-
-      this.isConnectionDead = false;
     } catch (error) {
       Log.e('[Redis] 创建连接失败:', error);
       throw error;
@@ -292,19 +289,16 @@ export class Redis {
     // 错误事件
     this.client.on('error', (error) => {
       Log.e('[Redis] 错误:', error.message);
-      this.isConnectionDead = true;
     });
 
     // 就绪事件
     this.client.on('ready', () => {
       Log.v('[Redis] 连接就绪');
-      this.isConnectionDead = false;
     });
 
     // 断开连接事件
     this.client.on('end', () => {
       Log.v('[Redis] 连接已断开');
-      this.isConnectionDead = true;
     });
   }
 
@@ -370,56 +364,6 @@ export class Redis {
   }
 
   /**
-   * 自动重试执行函数（支持连接重建）
-   *
-   * 策略：
-   * 1. 第一次失败：直接重试（可能是临时网络抖动）
-   * 2. 第二次失败：重建连接后重试（Redis 可能已恢复）
-   * 3. 第三次失败：彻底放弃，抛出错误
-   */
-  private async retryOnConnectionError<T>(
-    operation: () => Promise<T>,
-  ): Promise<T> {
-    let lastError: any;
-
-    for (let attempt = 1; attempt <= this.MAX_RETRIES; attempt++) {
-      try {
-        // 如果连接已失效且不是第一次尝试，先重建连接
-        if (this.isConnectionDead && attempt > 1) {
-          await this.recreateConnection();
-        }
-
-        return await operation();
-      } catch (error) {
-        lastError = error;
-
-        // 检查是否为连接错误
-        if (!this.isConnectionError(error)) {
-          throw error; // 非连接错误，直接抛出
-        }
-
-        // 第一次失败：标记连接失效
-        if (attempt === 1) {
-          this.isConnectionDead = true;
-        }
-
-        // 最后一次尝试失败
-        if (attempt === this.MAX_RETRIES) {
-          Log.e(`[Redis] 重试 ${this.MAX_RETRIES} 次后仍然失败，放弃操作`);
-          throw error;
-        }
-
-        // 等待后重试
-        const delay = this.RETRY_DELAY * attempt;
-        Log.v(`[Redis] 第 ${attempt} 次尝试失败，${delay}ms 后重试...`);
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      }
-    }
-
-    throw lastError;
-  }
-
-  /**
    * 启动健康检查
    */
   private startHealthCheck(): void {
@@ -427,18 +371,18 @@ export class Redis {
 
     this.healthCheckTimer = setInterval(async () => {
       try {
-        // 健康检查不使用 Proxy,避免触发重试逻辑
         if (this.client?.isOpen) {
-          // 直接调用原生 client,不触发自动重试
           await this.client.ping();
-          this.isConnectionDead = false;
         }
       } catch (error) {
         Log.e('[Redis] 健康检查失败:', error);
-        this.isConnectionDead = true;
-        // 不在这里触发重连,留给业务请求触发
       }
     }, this.HEALTH_CHECK_INTERVAL);
+
+    // 允许进程在没有其他事件时正常退出
+    if (this.healthCheckTimer.unref) {
+      this.healthCheckTimer.unref();
+    }
   }
 
   /**
@@ -453,6 +397,9 @@ export class Redis {
 
   /**
    * 创建代理客户端（自动错误重试）
+   *
+   * 对返回 Promise 的方法，在遇到连接错误时自动重建连接并重试一次。
+   * 注意：重试时使用 self.client 获取最新的客户端实例，避免引用已销毁的旧连接。
    */
   private createProxiedClient(): void {
     if (!this.client) {
@@ -469,11 +416,21 @@ export class Redis {
           return (...args: any[]) => {
             const result = original.apply(target, args);
 
-            // 对 Promise 结果添加重试逻辑
+            // 仅对返回 Promise 的方法添加连接错误恢复逻辑
             if (result instanceof Promise) {
-              return self.retryOnConnectionError(() =>
-                original.apply(target, args),
-              );
+              return result.catch(async (error: any) => {
+                // 非连接错误直接抛出
+                if (!self.isConnectionError(error)) throw error;
+
+                // 重建连接
+                await self.recreateConnection();
+
+                // 使用重建后的新客户端实例重试（不引用旧的 target）
+                if (!self.client) throw error;
+                const newMethod = (self.client as any)[prop];
+                if (typeof newMethod !== 'function') throw error;
+                return newMethod.apply(self.client, args);
+              });
             }
 
             return result;
@@ -546,7 +503,23 @@ export class Redis {
   public async close(): Promise<void> {
     this.stopHealthCheck();
 
-    // 清理初始化和重连任务
+    // 从实例缓存中移除，避免后续 create() 返回已关闭的实例
+    for (const [key, instance] of Redis.instances) {
+      if (instance === this) {
+        Redis.instances.delete(key);
+        break;
+      }
+    }
+
+    // 等待正在进行的重连完成，避免竞态条件
+    if (this.reconnectLock) {
+      try {
+        await this.reconnectLock;
+      } catch {
+        // 忽略重连错误
+      }
+    }
+
     this.initializePromise = null;
     this.reconnectLock = null;
 

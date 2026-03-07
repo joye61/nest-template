@@ -695,8 +695,12 @@ export class MySQLDialect extends BaseDialect {
       if (uniqueKeys.includes(key)) {
         continue;
       }
-      updateParts.push(`${this.escapeIdentifier(key)} = ?`);
-      holders.push(this.toSQLHolder(updateFields[key]));
+      const value = updateFields[key];
+      const result = this.createDataFilter(key, value);
+      if (result.prepare) {
+        updateParts.push(result.prepare);
+        holders.push(...result.holders);
+      }
     }
 
     if (updateParts.length > 0) {

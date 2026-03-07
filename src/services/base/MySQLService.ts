@@ -3,7 +3,6 @@ import { ConfigService } from '@nestjs/config';
 import { Table } from './database/Table';
 import { Database } from './database/Database';
 import type { TransactionResult } from './database/Database';
-import type { ResultSetHeader } from 'mysql2';
 import { DatabaseConfig } from './database';
 
 /**
@@ -213,7 +212,7 @@ export class MySQLService implements OnModuleDestroy {
     statement: string,
     holders?: any[],
     separator = '::',
-  ): Promise<T[] | ResultSetHeader> {
+  ): Promise<T[]> {
     const [dbName, sql] = this.stateParse(statement, separator);
     const db = this.database(dbName);
     return db.query<T>(sql.trim(), holders);
