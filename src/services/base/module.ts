@@ -5,6 +5,7 @@ import { RedisService } from './RedisService';
 import { MutexLock } from './MutexLock';
 import { RequestService } from './RequestService';
 import { OrderNoService } from './OrderNoService';
+import { CaptchaService } from './CaptchaService';
 
 @Module({
   providers: [
@@ -14,6 +15,7 @@ import { OrderNoService } from './OrderNoService';
     MutexLock,
     RequestService,
     OrderNoService,
+    CaptchaService,
   ],
   exports: [
     MySQLService,
@@ -22,6 +24,7 @@ import { OrderNoService } from './OrderNoService';
     MutexLock,
     RequestService,
     OrderNoService,
+    CaptchaService,
   ],
 })
 export class BaseModule {}

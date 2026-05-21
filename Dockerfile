@@ -110,6 +110,9 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./package.json
 
+# 复制静态资源（包含 captcha.wasm 等运行时二进制文件）
+COPY --from=builder /app/assets ./assets
+
 # 复制 PM2 配置文件
 COPY pm2.dev.config.js pm2.prod.config.js ./
 
