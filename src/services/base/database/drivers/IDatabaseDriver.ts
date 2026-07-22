@@ -21,6 +21,8 @@ export interface DatabaseConfig {
   password?: string;
   /** 数据库名 */
   database?: string;
+  /** SQLite 数据库文件路径，使用 :memory: 可创建内存数据库 */
+  filename?: string;
   /** 连接字符串（可选，优先于上述单独配置） */
   connectionString?: string;
 
@@ -61,6 +63,8 @@ export interface ResultHeader {
   insertId?: number;
   /** 实际改变的行数（MySQL UPDATE 专用） */
   changedRows?: number;
+  /** UPSERT 实际执行的动作 */
+  action?: 'insert' | 'update';
 }
 
 /**

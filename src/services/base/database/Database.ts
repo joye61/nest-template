@@ -1,6 +1,8 @@
 import { Table } from './Table';
 import { MySQLDriver } from './drivers/MySQLDriver';
 import { MySQLDialect } from './dialect/MySQLDialect';
+import { SQLiteDriver } from './drivers/SQLiteDriver';
+import { SQLiteDialect } from './dialect/SQLiteDialect';
 import {
   IDatabaseDriver,
   DatabaseConfig,
@@ -122,7 +124,8 @@ export class Database {
     config: string | DatabaseConfig,
     type: DatabaseType = 'mysql',
   ): Database {
-    const cacheKey = this.generateCacheKey(config, type);
+    const dbType = this.resolveDatabaseType(config, type);
+    const cacheKey = this.generateCacheKey(config, dbType);
 
     // 检查缓存，如果已存在则直接返回
     const cached = Database.instances.get(cacheKey);
@@ -131,13 +134,12 @@ export class Database {
     }
 
     // 根据类型创建驱动和方言
-    const dbType = typeof config === 'string' ? type : (config.type || type);
     const { driver, dialect } = this.createDriverAndDialect(config, dbType);
 
     // 创建实例并缓存
     const instance = new Database(driver, dialect);
     Database.instances.set(cacheKey, instance);
-    
+
     return instance;
   }
 
@@ -163,7 +165,9 @@ export class Database {
       user: config.user,
       password: config.password || '',
       database: config.database,
+      filename: config.filename,
       connectionString: config.connectionString,
+      readOnly: config.readOnly,
       // 连接池配置
       connectionLimit: config.connectionLimit,
       queueLimit: config.queueLimit,
@@ -176,6 +180,23 @@ export class Database {
 
     // 使用排序后的 JSON 字符串作为缓存键（确保顺序一致）
     return JSON.stringify(keyConfig, Object.keys(keyConfig).sort());
+  }
+
+  /**
+   * 根据显式类型或连接字符串协议解析数据库类型
+   */
+  private static resolveDatabaseType(
+    config: string | DatabaseConfig,
+    fallback: DatabaseType,
+  ): DatabaseType {
+    if (typeof config !== 'string') {
+      return config.type || fallback;
+    }
+    const protocol = config.match(/^([a-z][a-z0-9+.-]*):/i)?.[1]?.toLowerCase();
+    if (protocol === 'sqlite' || protocol === 'mysql') {
+      return protocol;
+    }
+    return fallback;
   }
 
   /**
@@ -193,6 +214,11 @@ export class Database {
         return {
           driver: new MySQLDriver(config as string | DatabaseConfig),
           dialect: new MySQLDialect(),
+        };
+      case 'sqlite':
+        return {
+          driver: new SQLiteDriver(config as string | DatabaseConfig),
+          dialect: new SQLiteDialect(),
         };
       // 未来可以添加其他数据库支持
       // case 'postgresql':
@@ -418,7 +444,7 @@ export class Database {
    */
   public static async closeAll(): Promise<void> {
     const instances = Array.from(Database.instances.values());
-    
+
     if (instances.length === 0) {
       return;
     }
@@ -430,12 +456,12 @@ export class Database {
         await instance.driver.close();
         // 清理 Table 缓存
         instance.tables.clear();
-      })
+      }),
     );
 
     // 清空实例缓存
     Database.instances.clear();
-    
+
     Log.v(`[Database] Closed ${instances.length} database connection(s)`);
   }
 }

@@ -182,7 +182,9 @@ export class Table {
    *
    * @throws {Error} 如果数据为空或记录字段不一致
    */
-  public async adds(data: Array<Record<string, any>>): Promise<OperationResult> {
+  public async adds(
+    data: Array<Record<string, any>>,
+  ): Promise<OperationResult> {
     if (!Array.isArray(data) || !data.length) {
       throw new Error(
         'Parameter error, data must be an array with length >= 1',
@@ -443,14 +445,7 @@ export class Table {
       }
     }
 
-    // 检查 dialect 是否支持 upsert
-    if (!('buildUpsert' in this.dialect)) {
-      throw new Error(
-        `Upsert operation is not supported for ${this.dialect.type} dialect`,
-      );
-    }
-
-    const { prepare, holders } = (this.dialect as any).buildUpsert({
+    const { prepare, holders } = this.dialect.buildUpsert({
       table: this.tableName,
       data,
       uniqueKeys,
@@ -462,8 +457,13 @@ export class Table {
     }
     const result = await this.driver.execute(prepare, holders);
 
-    // MySQL 行为：affectedRows = 1 表示插入，2 表示更新，0 表示无变化
-    const action = result.affectedRows === 1 ? 'insert' : 'update';
+    const action =
+      result.action ||
+      (this.dialect.type === 'mysql'
+        ? result.affectedRows === 1
+          ? 'insert'
+          : 'update'
+        : undefined);
 
     // 保存操作结果
     this._lastOperationResult = {

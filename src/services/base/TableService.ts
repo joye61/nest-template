@@ -1,6 +1,7 @@
-import { Injectable } from '@nestjs/common';
-import { MySQLService } from './MySQLService';
+import { Inject, Injectable } from '@nestjs/common';
 import { Table } from './database/Table';
+import { DATABASE_SERVICE } from './DatabaseService';
+import type { DatabaseService } from './DatabaseService';
 
 /**
  * 表管理服务
@@ -12,7 +13,7 @@ export class TableService {
   /** 示例表 */
   public example: Table;
 
-  constructor(private db: MySQLService) {
+  constructor(@Inject(DATABASE_SERVICE) private db: DatabaseService) {
     this.example = this.db.table('example');
   }
 }

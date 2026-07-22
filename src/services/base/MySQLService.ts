@@ -10,7 +10,7 @@ import { DatabaseConfig } from './database';
  */
 @Injectable()
 export class MySQLService implements OnModuleDestroy {
-  constructor(private readonly config: ConfigService) {
+  constructor(protected readonly config: ConfigService) {
     // 注意：数据库连接采用懒加载模式
     // 只有在实际使用时才会创建连接，且会自动缓存
     // 无需在构造函数中预初始化

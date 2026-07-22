@@ -4,6 +4,7 @@ import {
   SQLHolderValue,
   SQLValue,
   SQLValueArray,
+  UpsertParams,
 } from './BaseDialect';
 import {
   Where,
@@ -19,6 +20,7 @@ import {
   Having,
   OrderBy,
 } from '../type';
+import type { DatabaseType } from '../drivers/IDatabaseDriver';
 
 /**
  * 字段记录类型
@@ -26,11 +28,11 @@ import {
 type FieldRecord = Record<string, FieldValue>;
 
 /**
- * MySQL 方言实现
- * 实现 MySQL 特定的 SQL 语法
+ * 问号占位符 SQL 方言的公共实现
+ * 提供 MySQL 与 SQLite 共享的查询条件、排序、关联和分组逻辑
  */
-export class MySQLDialect extends BaseDialect {
-  readonly type = 'mysql' as const;
+export abstract class QuestionMarkDialect extends BaseDialect {
+  abstract readonly type: DatabaseType;
 
   /**
    * MySQL 使用反引号转义标识符
@@ -443,27 +445,27 @@ export class MySQLDialect extends BaseDialect {
 
   /**
    * 创建 ORDER BY 子句
-   * 
+   *
    * 支持不区分大小写的排序方向参数，但生成的 SQL 始终使用大写。
    * TypeScript 会自动提示所有可能的大小写组合。
-   * 
+   *
    * @param order - 排序配置对象，key 为字段名，value 为排序方向（支持所有大小写组合）
    * @returns ORDER BY 子句字符串（不含 ORDER BY 关键字）
-   * 
+   *
    * @example
    * ```typescript
    * // TypeScript 会自动提示: 'asc', 'ASC', 'Asc', 'desc', 'DESC', 'Desc' 等
    * createOrder({ created_at: 'desc', id: 'asc' })
    * // → `created_at` DESC, `id` ASC
-   * 
+   *
    * // 支持大写
    * createOrder({ name: 'ASC' })
    * // → `name` ASC
-   * 
+   *
    * // 支持混合
    * createOrder({ age: 'DESC', status: 'asc' })
    * // → `age` DESC, `status` ASC
-   * 
+   *
    * // 无效的排序方向会被 TypeScript 标记为类型错误
    * createOrder({ field1: 'invalid' }) // ❌ TypeScript 类型错误
    * ```
@@ -474,46 +476,46 @@ export class MySQLDialect extends BaseDialect {
     if (!order) {
       return '';
     }
-    
+
     const parts: Array<string> = [];
-    
+
     for (const key in order) {
       const value = order[key];
-      
+
       // 确保值是字符串类型
       if (typeof value !== 'string') {
         continue;
       }
-      
+
       // 转换为大写并验证
       const direction = value.toUpperCase();
-      
+
       // 只接受 ASC 或 DESC
       if (direction === 'ASC' || direction === 'DESC') {
         parts.push(`${this.escapeIdentifier(key)} ${direction}`);
       }
     }
-    
+
     return parts.join(', ');
   }
 
   /**
    * 创建 JOIN 子句
    * 支持多种 JOIN 类型和配置
-   * 
+   *
    * 示例:
    * 1. 简单字符串格式:
    *    { orders: 'users.id = orders.user_id' }
    *    → INNER JOIN `orders` ON users.id = orders.user_id
-   * 
+   *
    * 2. 完整配置格式:
    *    { orders: { type: 'LEFT', on: 'users.id = orders.user_id' } }
    *    → LEFT JOIN `orders` ON users.id = orders.user_id
-   * 
+   *
    * 3. USING 语法:
    *    { orders: { type: 'INNER', using: ['user_id'] } }
    *    → INNER JOIN `orders` USING (`user_id`)
-   * 
+   *
    * 4. CROSS JOIN:
    *    { orders: { type: 'CROSS' } }
    *    → CROSS JOIN `orders`
@@ -527,7 +529,7 @@ export class MySQLDialect extends BaseDialect {
 
     for (const tableName of Object.keys(join)) {
       const joinDef = join[tableName];
-      
+
       // 如果是字符串，默认为 INNER JOIN
       if (typeof joinDef === 'string') {
         parts.push(` INNER JOIN ${this.escapeIdentifier(tableName)} ON ${joinDef}`);
@@ -601,12 +603,12 @@ export class MySQLDialect extends BaseDialect {
         return '';
       }
       return groupBy.map(field => {
-        // 如果字段包含点号（表名.字段名），需要分别转义
-        if (field.includes('.')) {
-          const parts = field.split('.');
+          // 如果字段包含点号（表名.字段名），需要分别转义
+          if (field.includes('.')) {
+            const parts = field.split('.');
           return parts.map(part => this.escapeIdentifier(part)).join('.');
-        }
-        return this.escapeIdentifier(field);
+          }
+          return this.escapeIdentifier(field);
       }).join(', ');
     }
 
@@ -663,16 +665,18 @@ export class MySQLDialect extends BaseDialect {
     }
     return ` LIMIT ${limit}`;
   }
+}
+
+/**
+ * MySQL 方言实现
+ */
+export class MySQLDialect extends QuestionMarkDialect {
+  readonly type: DatabaseType = 'mysql';
 
   /**
    * 构建 MySQL UPSERT (INSERT ... ON DUPLICATE KEY UPDATE)
    */
-  buildUpsert(params: {
-    table: string;
-    data: Record<string, any>;
-    uniqueKeys: string[];
-    updateData?: Record<string, any>;
-  }): ValueHolders {
+  buildUpsert(params: UpsertParams): ValueHolders {
     const { table, data, uniqueKeys, updateData } = params;
 
     const fields: string[] = [];
