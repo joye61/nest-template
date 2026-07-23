@@ -7,6 +7,11 @@ export type DatabaseType = 'mysql' | 'postgresql' | 'sqlite' | 'mssql';
  * 数据库连接配置
  *
  * 支持多种数据库类型的连接配置。
+ *
+ * SQLite 常用写法：
+ * - connectionString: 'sqlite:./data/app.db'
+ * - filename: './data/app.db'
+ * - filename: ':memory:'
  */
 export interface DatabaseConfig {
   /** 数据库类型（默认：mysql） */
@@ -23,7 +28,7 @@ export interface DatabaseConfig {
   database?: string;
   /** SQLite 数据库文件路径，使用 :memory: 可创建内存数据库 */
   filename?: string;
-  /** 连接字符串（可选，优先于上述单独配置） */
+  /** 连接字符串（可选，优先于上述单独配置；SQLite 可使用 sqlite: 协议） */
   connectionString?: string;
 
   // 自动重连配置
@@ -76,7 +81,7 @@ export interface ResultHeader {
  * 实现类：
  * - MySQLDriver - MySQL 数据库驱动
  * - PostgreSQLDriver - PostgreSQL 数据库驱动（计划中）
- * - SQLiteDriver - SQLite 数据库驱动（计划中）
+ * - SQLiteDriver - SQLite 数据库驱动
  *
  * @example
  * ```typescript

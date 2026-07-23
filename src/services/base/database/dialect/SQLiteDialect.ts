@@ -7,6 +7,11 @@ import { FieldValue, OrderBy, UpdateFieldValue, Where } from '../type';
  *
  * SQLite 与 MySQL 都支持反引号标识符和问号占位符，因此复用通用查询构建逻辑，
  * 仅覆盖分页与 UPSERT 等存在语法差异的部分。
+ *
+ * 当前主要处理三类差异：
+ * - 文本正则筛选使用 REGEXP，而不是 MySQL 的 RLIKE
+ * - 分页语法固定为 LIMIT count OFFSET offset
+ * - UPDATE / DELETE 限制条数时，借助 rowid 子查询保持统一 API
  */
 export class SQLiteDialect extends QuestionMarkDialect {
   readonly type = 'sqlite' as const;
@@ -36,6 +41,7 @@ export class SQLiteDialect extends QuestionMarkDialect {
 
   /**
    * SQLite 默认未启用 UPDATE ORDER BY LIMIT，使用 rowid 子查询保持公共 API
+    * 这样业务层仍可继续传入 order 和 limit，无需区分数据库类型。
    */
   buildUpdate(params: {
     table: string;
@@ -73,6 +79,7 @@ export class SQLiteDialect extends QuestionMarkDialect {
 
   /**
    * SQLite 默认未启用 DELETE ORDER BY LIMIT，使用 rowid 子查询保持公共 API
+    * 通过先选出目标 rowid，再执行删除，兼容常见 SQLite 编译选项。
    */
   buildDelete(params: {
     table: string;
@@ -93,6 +100,7 @@ export class SQLiteDialect extends QuestionMarkDialect {
 
   /**
    * 构建 SQLite UPSERT (INSERT ... ON CONFLICT ... DO UPDATE)
+    * 若没有可更新字段，则退化为 DO NOTHING。
    */
   buildUpsert(params: UpsertParams): ValueHolders {
     const { table, data, uniqueKeys, updateData } = params;
@@ -131,6 +139,9 @@ export class SQLiteDialect extends QuestionMarkDialect {
     return { prepare: sql, holders };
   }
 
+  /**
+   * 构建受 limit/order 约束的 rowid 子查询，供 UPDATE/DELETE 复用。
+   */
   private buildRowIdTarget(params: {
     table: string;
     where?: Where;

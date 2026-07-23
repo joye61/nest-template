@@ -88,6 +88,12 @@ export class Database {
    * const db = Database.create(
    *   'mysql://root:password@localhost:3306/myapp?charset=utf8mb4&timezone=+08:00'
    * );
+  *
+  * // SQLite 文件数据库
+  * const sqliteDb = Database.create('sqlite:./data/app.db');
+  *
+  * // SQLite 内存数据库
+  * const memoryDb = Database.create('sqlite::memory:');
    *
    *
    * // ========== 方式 2：使用配置对象（推荐）==========
@@ -115,6 +121,14 @@ export class Database {
    *   acquireTimeout: 10000,
    *   timeout: 30000,
    * });
+  *
+  * // SQLite 配置对象
+  * const sqliteDb = Database.create({
+  *   type: 'sqlite',
+  *   filename: './data/app.db',
+  *   timeout: 5000,
+  *   readOnly: false,
+  * });
    *
    * ```
    *
@@ -406,6 +420,7 @@ export class Database {
    * - 事务内的所有操作必须使用同一个数据库实例
    * - 避免在事务中执行耗时操作（如网络请求），会占用数据库连接
    * - MySQL 不支持跨数据库事务，所有表必须在同一数据库中
+  * - SQLite 使用单连接串行模型，事务回调执行期间会独占该连接
    *
    * @throws {Error} 回调函数中的任何错误都会导致事务回滚并重新抛出
    */

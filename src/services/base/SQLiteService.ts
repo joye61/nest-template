@@ -7,6 +7,7 @@ import { MySQLService } from './MySQLService';
  * SQLite 服务入口类
  *
  * 复用 MySQLService 的表标识解析和快捷 API，仅覆盖数据库配置解析。
+ * 适合在业务层按名称管理多个 SQLite 文件库或内存库。
  */
 @Injectable()
 export class SQLiteService extends MySQLService {
@@ -21,7 +22,11 @@ export class SQLiteService extends MySQLService {
    * 1. 环境变量 SQLITE_URL_{NAME}
    * 2. 配置对象 sqlite.{name}
    *
-   * URL 可使用 sqlite: 协议，也可以直接填写 SQLite 文件路径。
+    * URL 可使用 sqlite: 协议，也可以直接填写 SQLite 文件路径。
+    * 常见值示例：
+    * - sqlite:./data/app.db
+    * - sqlite::memory:
+    * - ./data/app.db
    *
    * @param name 数据库名称，不区分大小写
    */
@@ -53,6 +58,9 @@ export class SQLiteService extends MySQLService {
 
   /**
    * 校验 SQLite 配置对象，避免误把其他数据库连接串当成 SQLite 文件路径。
+    *
+    * SQLite 配置通常只需要 filename、connectionString、database 中的一个字段，
+    * 这里同时兼容几种写法，便于复用统一的 DatabaseConfig 类型。
    */
   private assertSQLiteConfig(config: DatabaseConfig, source: string): void {
     if (config.type && config.type !== 'sqlite') {
@@ -74,6 +82,7 @@ export class SQLiteService extends MySQLService {
 
   /**
    * 校验 SQLite 目标地址，允许 sqlite: 协议或普通文件路径。
+    * 这里只拦截明显的其他数据库协议，文件路径本身不做存在性校验。
    */
   private assertSQLiteLocation(value: string, source: string): void {
     if (/^(mysql|postgresql|mssql):/i.test(value)) {
