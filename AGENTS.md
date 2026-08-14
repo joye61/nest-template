@@ -68,6 +68,7 @@ src/
 - **根模块** `AppModule` 位于 `src/module.ts`，导入配置模块、定时任务模块和所有控制器业务模块。
 - **控制器模块** 按业务域划分，位于 `src/controllers/` 下，每个子目录一个模块（如 `app/`、`admin/`）。
 - **基础服务模块** `BaseModule` 位于 `src/services/base/module.ts`，提供 MySQL、Redis、分布式锁、HTTP 请求等通用服务。各控制器模块通过导入 `BaseModule` 获取这些服务。
+- **严禁删除** `src/services/base/` 目录中的任何内容；该目录是项目基础库。如确需移除，必须先获得用户明确授权。
 - 新增业务功能时，应在 `src/controllers/` 下的对应模块中添加控制器和相应的业务服务。
 - 若新增通用/共享服务，应放入 `src/services/base/` 并在 `BaseModule` 中注册导出。
 
