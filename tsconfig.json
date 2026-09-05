@@ -11,18 +11,17 @@
     "experimentalDecorators": true,
     "allowSyntheticDefaultImports": true,
     "target": "ES2023",
+    "types": ["node"],
     "sourceMap": true,
     "outDir": "./dist",
-    "baseUrl": "./",
+    "rootDir": "./",
+    "paths": {
+      "src/*": ["./src/*"]
+    },
     "incremental": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true
   },
-  "include": [
-    "src/**/*"
-  ],
-  "exclude": [
-    "scripts/**/*",
-    "dist/**/*"
-  ]
+  "include": ["src/**/*"],
+  "exclude": ["scripts/**/*", "dist/**/*"]
 }

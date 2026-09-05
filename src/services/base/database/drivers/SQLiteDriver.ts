@@ -36,11 +36,11 @@ export class SQLiteDriver implements IDatabaseDriver {
       enableForeignKeyConstraints: resolved.enableForeignKeyConstraints,
     });
     // 为查询构建器补齐 REGEXP 能力，便于复用统一的筛选表达式。
-    this.database.function('regexp', (pattern: string, value: unknown) => {
+    this.database.function('regexp', (pattern, value) => {
       if (value === null || value === undefined) {
         return 0;
       }
-      return new RegExp(pattern).test(String(value)) ? 1 : 0;
+      return new RegExp(String(pattern)).test(String(value)) ? 1 : 0;
     });
   }
 
