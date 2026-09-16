@@ -19,6 +19,7 @@
 //   * @types/node installed.
 
 import './wasm_exec'; // side-effect: registers globalThis.Go
+import type {} from './globals';
 
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
