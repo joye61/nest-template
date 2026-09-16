@@ -18,7 +18,9 @@ export interface RedisConfig {
   database?: number;
   /** 连接超时时间（毫秒），默认 10000 */
   connectTimeout?: number;
-  /** 是否启用离线队列（连接断开时缓存命令），默认 true */
+  /** 命令执行超时时间（毫秒），默认 3000 */
+  commandTimeout?: number;
+  /** 是否启用离线队列（连接断开时缓存命令），默认 false */
   enableOfflineQueue?: boolean;
   /** 是否启用自动重连，默认 true */
   enableAutoReconnect?: boolean;

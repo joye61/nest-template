@@ -46,6 +46,8 @@ export class Redis {
   /** 常量配置 */
   private readonly HEALTH_CHECK_INTERVAL = 30000;
 
+  private readonly DEFAULT_COMMAND_TIMEOUT = 3000;
+
   /**
    * 构造函数（私有）
    *
@@ -140,7 +142,8 @@ export class Redis {
     // 合并默认配置
     return {
       connectTimeout: 10000,
-      enableOfflineQueue: true,
+      commandTimeout: this.DEFAULT_COMMAND_TIMEOUT,
+      enableOfflineQueue: false,
       enableAutoReconnect: true,
       database: 0,
       ...config,
@@ -183,7 +186,8 @@ export class Redis {
       password: parsed.password ? decodeURIComponent(parsed.password) : undefined,
       database: dbStr ? parseInt(dbStr, 10) || 0 : 0,
       connectTimeout: 10000,
-      enableOfflineQueue: true,
+      commandTimeout: this.DEFAULT_COMMAND_TIMEOUT,
+      enableOfflineQueue: false,
       enableAutoReconnect: true,
     };
   }
@@ -198,7 +202,12 @@ export class Redis {
     }
 
     // 如果已经初始化成功，直接返回
-    if (this.client && this.client.isOpen && this.proxiedClient) {
+    if (
+      this.client &&
+      this.client.isOpen &&
+      this.client.isReady &&
+      this.proxiedClient
+    ) {
       return;
     }
 
@@ -246,7 +255,8 @@ export class Redis {
             : undefined,
         },
         database: this.config.database,
-        commandsQueueMaxLength: this.config.enableOfflineQueue ? 1000 : 0,
+        disableOfflineQueue: !this.config.enableOfflineQueue,
+        commandsQueueMaxLength: this.config.enableOfflineQueue ? 1000 : undefined,
       };
 
       // 添加认证信息
@@ -353,6 +363,7 @@ export class Redis {
       'Connection is closed',
       'Socket closed unexpectedly',
       'Connection timeout',
+      'Redis command timeout',
     ];
 
     return connectionErrorMessages.some(
@@ -364,6 +375,36 @@ export class Redis {
   }
 
   /**
+   * 为 Redis 命令设置最长等待时间，防止连接异常时 Promise 永久挂起。
+   */
+  private async executeWithTimeout<T>(
+    operation: Promise<T>,
+    command: PropertyKey,
+  ): Promise<T> {
+    const timeout = this.config.commandTimeout ?? this.DEFAULT_COMMAND_TIMEOUT;
+    let timer: NodeJS.Timeout | null = null;
+
+    try {
+      return await Promise.race([
+        operation,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            const error = new Error(
+              `Redis command timeout: ${String(command)} (${timeout}ms)`,
+            ) as Error & { code?: string };
+            error.code = 'REDIS_COMMAND_TIMEOUT';
+            reject(error);
+          }, timeout);
+
+          timer.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
    * 启动健康检查
    */
   private startHealthCheck(): void {
@@ -371,11 +412,17 @@ export class Redis {
 
     this.healthCheckTimer = setInterval(async () => {
       try {
-        if (this.client?.isOpen) {
-          await this.client.ping();
+        if (!this.client?.isOpen || !this.client.isReady) {
+          await this.recreateConnection();
+          return;
         }
+
+        await this.executeWithTimeout(this.client.ping(), 'PING');
       } catch (error) {
         Log.e('[Redis] 健康检查失败:', error);
+        await this.recreateConnection().catch((reconnectError) => {
+          Log.e('[Redis] 健康检查重连失败:', reconnectError);
+        });
       }
     }, this.HEALTH_CHECK_INTERVAL);
 
@@ -410,15 +457,18 @@ export class Redis {
     
     this.proxiedClient = new Proxy(this.client, {
       get(target, prop, receiver) {
-        const original = Reflect.get(target, prop, receiver);
+        const currentClient = self.client ?? target;
+        const original = Reflect.get(currentClient, prop, currentClient);
 
         if (typeof original === 'function') {
           return (...args: any[]) => {
-            const result = original.apply(target, args);
+            const activeClient = self.client ?? target;
+            const activeMethod = (activeClient as any)[prop];
+            const result = activeMethod.apply(activeClient, args);
 
             // 仅对返回 Promise 的方法添加连接错误恢复逻辑
             if (result instanceof Promise) {
-              return result.catch(async (error: any) => {
+              return self.executeWithTimeout(result, prop).catch(async (error: any) => {
                 // 非连接错误直接抛出
                 if (!self.isConnectionError(error)) throw error;
 
@@ -429,7 +479,10 @@ export class Redis {
                 if (!self.client) throw error;
                 const newMethod = (self.client as any)[prop];
                 if (typeof newMethod !== 'function') throw error;
-                return newMethod.apply(self.client, args);
+                return self.executeWithTimeout(
+                  newMethod.apply(self.client, args),
+                  prop,
+                );
               });
             }
 
