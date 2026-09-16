@@ -1,5 +1,6 @@
 import { HttpException, HttpStatus } from '@nestjs/common';
 import { createHash } from 'node:crypto';
+import { isIP } from 'node:net';
 import dayjs from 'dayjs';
 import { Request } from 'express';
 import fs from 'node:fs';
@@ -167,128 +168,16 @@ export class Utils {
   /**
    * 获取请求客户端的真实 IP 地址
    *
-   * 优先级（从高到低）：
-   * 1. x-real-ip（Nginx 直连）
-   * 2. x-forwarded-for 第一个 IP（多层代理）
-   * 3. cf-connecting-ip（Cloudflare）
-   * 4. x-client-ip（部分代理）
-   * 5. req.socket.remoteAddress（直连）
-   * 6. req.ip（Express 提取）
+   * 使用 Express 的 trust proxy 规则解析地址，默认不信任代理头。
+   * 反向代理部署需显式配置可信代理地址，并由代理设置 X-Forwarded-For。
    *
    * @param req Express Request 对象
    * @returns 客户端 IP 地址，获取失败返回 'unknown'
-   *
-   * @example
-   * ```typescript
-   * // 直连
-   * Utils.ip(req) // "192.168.1.100"
-   *
-   * // Nginx 代理
-   * // x-real-ip: 120.230.45.67
-   * Utils.ip(req) // "120.230.45.67"
-   *
-   * // 多层代理
-   * // x-forwarded-for: 120.230.45.67, 10.0.0.1, 172.16.0.1
-   * Utils.ip(req) // "120.230.45.67"
-   * ```
    */
   static ip(req: Request): string {
-    try {
-      // 1. x-real-ip: Nginx 反向代理常用
-      const realIp = req.headers['x-real-ip'];
-      if (realIp && typeof realIp === 'string') {
-        const ip = realIp.trim();
-        if (ip && Utils.isValidIp(ip)) {
-          return ip;
-        }
-      }
-
-      // 2. x-forwarded-for: 多层代理时的客户端 IP 链
-      // 格式: "client, proxy1, proxy2"，取第一个
-      const forwardedFor = req.headers['x-forwarded-for'];
-      if (forwardedFor) {
-        const ips = (
-          typeof forwardedFor === 'string' ? forwardedFor : forwardedFor[0]
-        )
-          .split(',')
-          .map((ip) => ip.trim())
-          .filter((ip) => ip && Utils.isValidIp(ip));
-
-        if (ips.length > 0) {
-          return ips[0];
-        }
-      }
-
-      // 3. cf-connecting-ip: Cloudflare CDN
-      const cfIp = req.headers['cf-connecting-ip'];
-      if (cfIp && typeof cfIp === 'string') {
-        const ip = cfIp.trim();
-        if (ip && Utils.isValidIp(ip)) {
-          return ip;
-        }
-      }
-
-      // 4. x-client-ip: 部分代理服务器使用
-      const clientIp = req.headers['x-client-ip'];
-      if (clientIp && typeof clientIp === 'string') {
-        const ip = clientIp.trim();
-        if (ip && Utils.isValidIp(ip)) {
-          return ip;
-        }
-      }
-
-      // 5. socket.remoteAddress: 直连时的真实地址
-      const socketIp = req.socket?.remoteAddress;
-      if (socketIp) {
-        // 去除 IPv6 前缀 "::ffff:"
-        const ip = socketIp.replace(/^::ffff:/, '').trim();
-        if (ip && Utils.isValidIp(ip)) {
-          return ip;
-        }
-      }
-
-      // 6. req.ip: Express 内置提取（trust proxy 配置）
-      if (req.ip) {
-        const ip = req.ip.replace(/^::ffff:/, '').trim();
-        if (ip && Utils.isValidIp(ip)) {
-          return ip;
-        }
-      }
-    } catch (error) {}
-
-    return 'unknown';
-  }
-
-  /**
-   * 验证 IP 地址格式是否合法
-   *
-   * 支持 IPv4 和 IPv6 格式
-   *
-   * @param ip IP 地址字符串
-   * @returns 是否为合法 IP
-   *
-   * @example
-   * ```typescript
-   * Utils.isValidIp('192.168.1.1')        // true
-   * Utils.isValidIp('2001:db8::1')        // true
-   * Utils.isValidIp('invalid')            // false
-   * Utils.isValidIp('999.999.999.999')    // false
-   * ```
-   */
-  private static isValidIp(ip: string): boolean {
-    if (!ip || typeof ip !== 'string') {
-      return false;
-    }
-
-    // IPv4 正则: 0-255.0-255.0-255.0-255
-    const ipv4Regex =
-      /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
-
-    // IPv6 正则（支持完整格式、:: 压缩格式、以及 :: 本身）
-    const ipv6Regex =
-      /^(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$|^::$|^::(?:[0-9a-fA-F]{1,4}:){0,6}[0-9a-fA-F]{1,4}$|^(?:[0-9a-fA-F]{1,4}:){1,7}:$|^(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}$|^(?:[0-9a-fA-F]{1,4}:){1,5}(?::[0-9a-fA-F]{1,4}){1,2}$|^(?:[0-9a-fA-F]{1,4}:){1,4}(?::[0-9a-fA-F]{1,4}){1,3}$|^(?:[0-9a-fA-F]{1,4}:){1,3}(?::[0-9a-fA-F]{1,4}){1,4}$|^(?:[0-9a-fA-F]{1,4}:){1,2}(?::[0-9a-fA-F]{1,4}){1,5}$|^[0-9a-fA-F]{1,4}:(?::[0-9a-fA-F]{1,4}){1,6}$/;
-
-    return ipv4Regex.test(ip) || ipv6Regex.test(ip);
+    const address = req.ip ?? req.socket?.remoteAddress ?? '';
+    const normalized = address.replace(/^::ffff:/i, '');
+    return isIP(normalized) ? normalized : 'unknown';
   }
 
   /**

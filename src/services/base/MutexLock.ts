@@ -18,6 +18,7 @@ export type SafeRunOptions = {
  * 自动续租记录
  */
 type RenewRecord = {
+  key: string;
   value: string;
   redisName?: string; // 记录锁所在的 Redis 实例，用于正确释放
   timer?: NodeJS.Timeout;
@@ -188,7 +189,11 @@ export class MutexLock implements OnModuleDestroy {
     ratio: number,
     redisName?: string,
   ): void {
-    const existingRecord = this.renewMap.get(key);
+    const recordKey = JSON.stringify([
+      (redisName ?? 'default').toLowerCase(),
+      key,
+    ]);
+    const existingRecord = this.renewMap.get(recordKey);
     
     // 如果已有相同 value 的续租，无需重复启动
     if (existingRecord?.value === value) {
@@ -198,14 +203,19 @@ export class MutexLock implements OnModuleDestroy {
     // 清理旧的续租记录
     if (existingRecord) {
       this.clearRenewTimer(existingRecord);
-      this.renewMap.delete(key);
+      this.renewMap.delete(recordKey);
     }
 
     const interval = Math.max(
       MutexLock.MIN_RENEW_INTERVAL_MS,
       Math.floor(ttlMs * ratio),
     );
-    const record: RenewRecord = { value, redisName, consecutiveRenewFailures: 0 };
+    const record: RenewRecord = {
+      key,
+      value,
+      redisName,
+      consecutiveRenewFailures: 0,
+    };
 
     const timer = setInterval(async () => {
       const success = await this.extendLockTtl(key, value, ttlMs, redisName);
@@ -216,26 +226,30 @@ export class MutexLock implements OnModuleDestroy {
         record.consecutiveRenewFailures++;
         // 连续失败次数过多，停止续租
         if (record.consecutiveRenewFailures >= MutexLock.MAX_RENEW_FAILURES) {
-          this.stopAutoRenew(key, value);
+          this.stopAutoRenew(key, value, redisName);
         }
       }
     }, interval);
 
     timer.unref?.();
     record.timer = timer;
-    this.renewMap.set(key, record);
+    this.renewMap.set(recordKey, record);
   }
 
   /**
    * 停止自动续租（仅当 value 匹配时）
    */
-  private stopAutoRenew(key: string, value: string): void {
-    const record = this.renewMap.get(key);
+  private stopAutoRenew(key: string, value: string, redisName?: string): void {
+    const recordKey = JSON.stringify([
+      (redisName ?? 'default').toLowerCase(),
+      key,
+    ]);
+    const record = this.renewMap.get(recordKey);
     if (!record || record.value !== value) {
       return;
     }
     this.clearRenewTimer(record);
-    this.renewMap.delete(key);
+    this.renewMap.delete(recordKey);
   }
 
   /**
@@ -267,7 +281,7 @@ export class MutexLock implements OnModuleDestroy {
     value: string,
     redisName?: string,
   ): Promise<void> {
-    this.stopAutoRenew(key, value);
+    this.stopAutoRenew(key, value, redisName);
     try {
       await this.releaseLock(key, value, redisName);
     } catch {
@@ -321,10 +335,9 @@ export class MutexLock implements OnModuleDestroy {
   }
 
   /**
-   * 释放所有持有的锁
+  * 释放所有正在自动续租的锁
    * 
-   * 注意：由于锁可能分布在不同的 Redis 实例上，
-   * 这里尝试在默认实例上释放所有锁
+  * 按续租记录中保存的 Redis 实例和原始锁名释放。
    */
   async releaseAllHeldLocks(): Promise<void> {
     const entries = Array.from(this.renewMap.entries());
@@ -335,7 +348,7 @@ export class MutexLock implements OnModuleDestroy {
       if (record.value) {
         try {
           // 使用记录中保存的 Redis 实例名释放锁，避免在错误实例上操作
-          await this.releaseLock(key, record.value, record.redisName);
+          await this.releaseLock(record.key, record.value, record.redisName);
         } catch {
           // 忽略释放失败
         }

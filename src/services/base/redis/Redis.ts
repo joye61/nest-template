@@ -12,7 +12,7 @@ import { Log } from 'src/common/Log';
  * // 创建实例
  * const redis = Redis.create('redis://localhost:6379');
  *
- * // 获取托管的客户端（自动错误重试）
+ * // 获取托管的客户端（命令超时保护）
  * const client = redis.getClient();
  *
  * // 使用原生 node-redis API
@@ -28,7 +28,7 @@ export class Redis {
   /** Redis 原生客户端实例 */
   private client: RedisClientType | null = null;
 
-  /** 代理客户端（带自动重试功能） */
+  /** 代理客户端（带命令超时保护） */
   private proxiedClient: RedisClientType | null = null;
 
   /** 配置对象 */
@@ -348,33 +348,6 @@ export class Redis {
   }
 
   /**
-   * 检查错误是否为连接错误
-   */
-  private isConnectionError(error: any): boolean {
-    if (!error) return false;
-
-    const connectionErrorMessages = [
-      'ECONNREFUSED',
-      'ECONNRESET',
-      'ETIMEDOUT',
-      'EHOSTUNREACH',
-      'ENETUNREACH',
-      'EPIPE',
-      'Connection is closed',
-      'Socket closed unexpectedly',
-      'Connection timeout',
-      'Redis command timeout',
-    ];
-
-    return connectionErrorMessages.some(
-      (msg) =>
-        error.code === msg ||
-        error.message?.includes(msg) ||
-        error.message?.toLowerCase().includes('connect'),
-    );
-  }
-
-  /**
    * 为 Redis 命令设置最长等待时间，防止连接异常时 Promise 永久挂起。
    */
   private async executeWithTimeout<T>(
@@ -443,10 +416,10 @@ export class Redis {
   }
 
   /**
-   * 创建代理客户端（自动错误重试）
+  * 创建代理客户端（命令超时保护）
    *
-   * 对返回 Promise 的方法，在遇到连接错误时自动重建连接并重试一次。
-   * 注意：重试时使用 self.client 获取最新的客户端实例，避免引用已销毁的旧连接。
+  * 已发出的命令不自动重放，避免响应丢失导致重复写入。
+  * 后续调用使用最新客户端，连接恢复由 node-redis 和健康检查负责。
    */
   private createProxiedClient(): void {
     if (!this.client) {
@@ -466,24 +439,8 @@ export class Redis {
             const activeMethod = (activeClient as any)[prop];
             const result = activeMethod.apply(activeClient, args);
 
-            // 仅对返回 Promise 的方法添加连接错误恢复逻辑
             if (result instanceof Promise) {
-              return self.executeWithTimeout(result, prop).catch(async (error: any) => {
-                // 非连接错误直接抛出
-                if (!self.isConnectionError(error)) throw error;
-
-                // 重建连接
-                await self.recreateConnection();
-
-                // 使用重建后的新客户端实例重试（不引用旧的 target）
-                if (!self.client) throw error;
-                const newMethod = (self.client as any)[prop];
-                if (typeof newMethod !== 'function') throw error;
-                return self.executeWithTimeout(
-                  newMethod.apply(self.client, args),
-                  prop,
-                );
-              });
+              return self.executeWithTimeout(result, prop);
             }
 
             return result;
@@ -502,7 +459,7 @@ export class Redis {
    * 
    * 返回的客户端具备：
    * 1. node-redis 的所有原生功能
-   * 2. 自动错误重试和连接重建
+  * 2. 命令超时保护和连接恢复（不自动重放命令）
    * 3. 完全透明的 API（类型安全）
    *
    * @returns 托管的 node-redis 客户端实例（RedisClientType）

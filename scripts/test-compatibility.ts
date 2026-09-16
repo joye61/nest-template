@@ -1,4 +1,4 @@
-import { Body, Controller, HttpCode, Module, Post } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Module, Post, Req } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { NestExpressApplication } from '@nestjs/platform-express';
@@ -6,6 +6,7 @@ import { SchedulerRegistry } from '@nestjs/schedule';
 import { ApiProperty, DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { IsInt, Min } from 'class-validator';
 import cookie from 'cookie-parser';
+import type { Request } from 'express';
 import assert from 'node:assert/strict';
 import { Utils } from 'src/common/Utils';
 import { Errors } from 'src/errors';
@@ -24,6 +25,12 @@ class CompatibilityDto {
 /** 仅供依赖兼容性测试使用的控制器。 */
 @Controller('compatibility')
 class CompatibilityController {
+  /** 返回经过可信代理规则解析的客户端地址。 */
+  @Get('ip')
+  ip(@Req() request: Request) {
+    return Utils.json(Utils.ip(request));
+  }
+
   /** 返回经过全局验证管道处理的请求。 */
   @Post()
   @HttpCode(200)
@@ -61,6 +68,26 @@ async function main(): Promise<void> {
     assert.ok(document.components?.schemas?.CompatibilityDto);
 
     const baseUrl = await app.getUrl();
+    const ipHeaders = {
+      'x-real-ip': '203.0.113.99',
+      'x-forwarded-for': '203.0.113.99, 198.51.100.20',
+      'cf-connecting-ip': '203.0.113.99',
+      'x-client-ip': '203.0.113.99',
+    };
+    const directResponse = await fetch(`${baseUrl}/compatibility/ip`, {
+      headers: ipHeaders,
+      signal: AbortSignal.timeout(5000),
+    });
+    assert.equal((await directResponse.json()).data, '127.0.0.1');
+
+    app.set('trust proxy', 'loopback');
+    const proxyResponse = await fetch(`${baseUrl}/compatibility/ip`, {
+      headers: ipHeaders,
+      signal: AbortSignal.timeout(5000),
+    });
+    assert.equal((await proxyResponse.json()).data, '198.51.100.20');
+    app.set('trust proxy', false);
+
     const validResponse = await fetch(`${baseUrl}/compatibility`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

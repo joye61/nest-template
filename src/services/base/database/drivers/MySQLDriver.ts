@@ -18,12 +18,12 @@ import { Log } from 'src/common/Log';
  *
  * 功能：
  * - 管理 MySQL 连接池
- * - 支持自动重连机制（3 次重试 + 指数退避）
+ * - 连接池自动管理连接，健康检查支持重试
  * - 事务管理（begin/commit/rollback）
  * - SQL 查询和执行
  * - 连接池状态监控
  *
- * 重连策略：
+ * 健康检查重连策略（业务 SQL 不自动重放）：
  * 1. 第一次失败：直接重试（可能是临时网络抖动）
  * 2. 第二次失败：重建连接池后重试（数据库可能已恢复）
  * 3. 第三次失败：彻底放弃，抛出错误
@@ -325,40 +325,38 @@ export class MySQLDriver implements IDatabaseDriver {
   /**
    * 执行查询操作（SELECT）
    *
-   * 支持自动重连：当检测到连接错误时，会自动重试一次。
+  * 连接错误直接抛出，避免响应丢失时重复执行有副作用的 SQL。
    *
    * @param sql - SQL 查询语句
    * @param params - 占位符参数
    * @returns 查询结果数组
    */
   async query<T = any>(sql: string, params?: any[]): Promise<T[]> {
-    return this.retryOnConnectionError(async () => {
-      const executor = this.transactionStore.getStore() || this.connection || this.pool;
-      const result = await executor.query(sql, params);
-      return result[0] as T[];
-    });
+    const executor =
+      this.transactionStore.getStore() || this.connection || this.pool;
+    const result = await executor.query(sql, params);
+    return result[0] as T[];
   }
 
   /**
    * 执行命令操作（INSERT, UPDATE, DELETE）
    *
-   * 支持自动重连：当检测到连接错误时，会自动重试一次。
+  * 连接错误直接抛出，是否重试由业务根据幂等性决定。
    *
    * @param sql - SQL 命令语句
    * @param params - 占位符参数
    * @returns 执行结果 { affectedRows, insertId? }
    */
   async execute(sql: string, params?: any[]): Promise<ResultHeader> {
-    return this.retryOnConnectionError(async () => {
-      const executor = this.transactionStore.getStore() || this.connection || this.pool;
-      const result = await executor.execute(sql, params);
-      const header = result[0] as ResultSetHeader;
+    const executor =
+      this.transactionStore.getStore() || this.connection || this.pool;
+    const result = await executor.execute(sql, params);
+    const header = result[0] as ResultSetHeader;
 
-      return {
-        affectedRows: header.affectedRows,
-        insertId: header.insertId > 0 ? header.insertId : undefined,
-      };
-    });
+    return {
+      affectedRows: header.affectedRows,
+      insertId: header.insertId > 0 ? header.insertId : undefined,
+    };
   }
 
   /**

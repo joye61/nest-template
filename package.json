@@ -6,13 +6,15 @@
   "private": true,
   "license": "MIT",
   "engines": {
-    "node": ">=22.13.0"
+    "node": "^22.22.3 || ^24.15.0 || >=26.0.0"
   },
   "scripts": {
     "build": "nest build",
-    "test": "npm run test:compatibility && npm run test:database:sqlite && npm run test:captcha",
+    "test": "npm run test:compatibility && npm run test:database:sqlite && npm run test:mutex-lock && npm run test:command-safety && npm run test:captcha",
     "test:compatibility": "cross-env NODE_ENV=test DATABASE_TYPE=sqlite SQLITE_URL_DEFAULT=sqlite::memory: ts-node -r tsconfig-paths/register scripts/test-compatibility.ts",
     "test:database:sqlite": "ts-node -r tsconfig-paths/register scripts/test-database-sqlite.ts",
+    "test:mutex-lock": "ts-node -r tsconfig-paths/register scripts/test-mutex-lock.ts",
+    "test:command-safety": "ts-node -r tsconfig-paths/register scripts/test-command-safety.ts",
     "test:captcha": "ts-node scripts/test-captcha.ts",
     "format": "prettier --write \"src/**/*.ts\"",
     "start": "cross-env NODE_ENV=development nest start",
@@ -27,11 +29,11 @@
     "pm2:logs": "pm2 logs"
   },
   "dependencies": {
-    "@nestjs/common": "^12.0.1",
+    "@nestjs/common": "^12.0.3",
     "@nestjs/config": "^12.0.0",
-    "@nestjs/core": "^12.0.1",
-    "@nestjs/platform-express": "^12.0.1",
-    "@nestjs/schedule": "^12.0.1",
+    "@nestjs/core": "^12.0.3",
+    "@nestjs/platform-express": "^12.0.3",
+    "@nestjs/schedule": "^12.0.2",
     "@nestjs/swagger": "^12.0.1",
     "axios": "^1.20.0",
     "class-validator": "^0.15.1",
@@ -39,18 +41,18 @@
     "cookie-parser": "^1.4.7",
     "dayjs": "^1.11.23",
     "lodash": "^4.18.1",
-    "mysql2": "^3.24.3",
+    "mysql2": "^3.24.4",
     "redis": "^6.2.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2"
   },
   "devDependencies": {
-    "@nestjs/cli": "^12.0.0",
-    "@nestjs/schematics": "^12.0.0",
+    "@nestjs/cli": "^12.0.1",
+    "@nestjs/schematics": "^12.0.2",
     "@types/cookie-parser": "^1.4.10",
     "@types/express": "^5.0.6",
     "@types/lodash": "^4.17.25",
-    "@types/node": "^26.4.1",
+    "@types/node": "^22.20.3",
     "cross-env": "^10.1.0",
     "detect-libc": "^2.1.2",
     "prettier": "^3.9.6",
