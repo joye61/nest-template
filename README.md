@@ -7,8 +7,14 @@
 - 运行环境：Node.js `^22.22.3 || ^24.15.0 || >=26.0.0`（与 Nest schematics 要求一致），建议使用 Node.js 24 LTS。
 - 安装依赖：`npm ci`。
 - 生产构建：`npm run build`，输出入口为 `dist/main.js`。
-- 回归测试：`npm test`，覆盖 Nest HTTP/Swagger/参数验证、客户端 IP 信任边界、内存 SQLite、分布式锁、命令响应丢失和验证码生成；无需外部 MySQL 或 Redis。锁与响应丢失测试使用内存替身，不替代真实服务集成测试。
+- 回归测试：`npm test`，覆盖 Nest HTTP/Swagger/参数验证、客户端 IP 信任边界、MySQL SQL 构建与事务路由、分布式锁、命令响应丢失和验证码生成；无需外部 MySQL 或 Redis。数据库、锁与响应丢失测试使用内存替身，不替代真实服务集成测试。
 - 安全审计：`npm audit --registry=https://registry.npmjs.org`，npm 镜像可能不支持审计接口。
+
+## MySQL
+
+- 数据库层仅支持 MySQL，位于拍平的 [src/services/base/mysql](src/services/base/mysql/README.md) 目录。
+- 业务层注入 `MySQLService`，通过 `MYSQL_URL_{NAME}` 或 `mysql.{name}` 配置多个 MySQL 实例；`TableService` 直接注入 `MySQLService`。
+- 单独验证：`npm run test:mysql`。SQL 构建和连接池执行由具体类负责，不再提供驱动接口、方言继承或数据库类型选择。
 
 ## 依赖兼容性
 

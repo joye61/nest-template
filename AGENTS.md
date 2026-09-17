@@ -48,12 +48,14 @@ src/
         ├── TableService.ts  # 表管理服务（集中管理 Table 实例）
         ├── MutexLock.ts     # 分布式互斥锁（基于 Redis）
         ├── RequestService.ts# HTTP 请求服务（基于 axios）
-        ├── database/        # 数据库抽象层
+      ├── mysql/           # MySQL 专用数据库层（目录拍平）
         │   ├── Database.ts  # 数据库连接管理
         │   ├── Table.ts     # 表操作类（链式查询构建器）
+      │   ├── MySQLDriver.ts # 连接池与事务
+      │   ├── SQLBuilder.ts # SQL 构建器
         │   ├── type.ts      # 数据库类型定义
-        │   ├── dialect/     # SQL 方言
-        │   └── drivers/     # 数据库驱动
+      │   ├── index.ts     # 统一导出
+      │   └── README.md    # 使用说明
         └── redis/           # Redis 抽象层
             ├── Redis.ts     # Redis 连接管理
             └── types.ts     # Redis 类型定义
@@ -90,10 +92,12 @@ src/
 ### 数据库（MySQL）
 
 - 使用自封装的 `MySQLService` 管理数据库连接，支持多数据库实例。
+- 数据库层仅支持 MySQL，位于 `src/services/base/mysql/`；使用具体的 `MySQLDriver` 和 `SQLBuilder`，不引入驱动接口或多数据库方言继承。
 - 数据库连接采用**懒加载**模式，首次使用时创建。
 - 使用 `"数据库名::表名"` 格式指定库表，默认数据库名为 `default`。
 - 表操作通过 `Table` 类完成，支持链式构建查询（find / findAll / add / update / remove 等）。
 - 集中在 `TableService` 中注册和管理表实例。
+- `TableService` 直接注入 `MySQLService`，不使用数据库类型选择器。
 - 配置方式：环境变量 `MYSQL_URL_{NAME}` 或配置对象 `mysql.{name}`。
 
 ### Redis

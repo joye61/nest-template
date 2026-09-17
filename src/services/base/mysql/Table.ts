@@ -1,7 +1,7 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { JoinDefinition, Where, GroupBy, Having } from './type';
-import { BaseDialect } from './dialect/BaseDialect';
-import { IDatabaseDriver } from './drivers/IDatabaseDriver';
-import { Log } from 'src/common/Log';
+import { SQLBuilder } from './SQLBuilder';
+import { MySQLDriver } from './MySQLDriver';
 
 /**
  * 数据库操作结果
@@ -13,7 +13,7 @@ export interface OperationResult {
   type: 'insert' | 'update' | 'delete' | 'upsert';
   /** 影响的行数 */
   affectedRows: number;
-  /** 新插入记录的 ID（仅 INSERT） */
+  /** 首条插入记录的自增 ID（仅 INSERT） */
   insertId?: number;
   /** 实际执行的动作（仅 UPSERT）：insert 表示插入，update 表示更新 */
   action?: 'insert' | 'update';
@@ -37,15 +37,30 @@ export interface OperationResult {
  * - 存储过程调用
  */
 export class Table {
+  private static readonly resultContext = new AsyncLocalStorage<{
+    results?: WeakMap<Table, OperationResult>;
+  }>();
+
   /**
-   * 最后一次操作的结果详情
-   *
-   * 注意：在并发场景中该值可能被其他请求覆盖。
-   * 推荐直接使用 add/update/remove 等方法的返回值获取可靠结果。
-   *
-   * @private
+   * 在独立结果上下文中运行任务，结束或抛错后释放结果引用。
+   * 嵌套调用创建子上下文；并行分支需要各自调用以隔离最后结果。
+   * @param callback 当前请求或任务的完整异步流程
+   * @returns 任务返回值
    */
-  private _lastOperationResult?: OperationResult;
+  public static async withResultContext<T>(
+    callback: () => T | Promise<T>,
+  ): Promise<T> {
+    const context: { results?: WeakMap<Table, OperationResult> } = {
+      results: new WeakMap(),
+    };
+    return Table.resultContext.run(context, async () => {
+      try {
+        return await callback();
+      } finally {
+        context.results = undefined;
+      }
+    });
+  }
 
   /**
    * 构造函数
@@ -54,23 +69,27 @@ export class Table {
    *
    * @param tableName - 表名
    * @param driver - 数据库驱动（负责执行 SQL）
-   * @param dialect - SQL 方言（负责构建 SQL）
+   * @param builder - MySQL SQL 构建器
    */
   constructor(
     public readonly tableName: string,
-    private readonly driver: IDatabaseDriver,
-    private readonly dialect: BaseDialect,
+    private readonly driver: MySQLDriver,
+    private readonly builder: SQLBuilder,
   ) {}
 
   /**
-   * 获取最后一次操作的详细结果
-   *
-   * 注意：并发场景中推荐直接使用写操作方法的返回值，更可靠。
-   *
-   * @returns 操作结果对象，包含 type、affectedRows、insertId 等信息
+   * 获取当前上下文中本表最后完成的成功写操作结果。
+   * 未建立上下文、没有成功写入或上下文已结束时返回 undefined。
+   * @returns 当前上下文的操作结果
    */
   public getLastResult(): OperationResult | undefined {
-    return this._lastOperationResult;
+    return Table.resultContext.getStore()?.results?.get(this);
+  }
+
+  /** 仅在活动上下文中保存结果，并始终返回当前操作的独立结果。 */
+  private recordResult(result: OperationResult): OperationResult {
+    Table.resultContext.getStore()?.results?.set(this, result);
+    return result;
   }
 
   /**
@@ -133,7 +152,7 @@ export class Table {
       having,
     } = params;
 
-    const { prepare, holders } = this.dialect.buildSelect({
+    const { prepare, holders } = this.builder.buildSelect({
       table: this.tableName,
       fields: field,
       where,
@@ -145,9 +164,6 @@ export class Table {
       having,
     });
 
-    if (process.env.SHOW_SQL_LOG === 'on') {
-      Log.v('[SQL]:', this.driver.format(prepare, holders));
-    }
     return await this.driver.query<T>(prepare, holders);
   }
 
@@ -207,14 +223,11 @@ export class Table {
       }
     }
 
-    const { prepare, holders } = this.dialect.buildInsert({
+    const { prepare, holders } = this.builder.buildInsert({
       table: this.tableName,
       data,
     });
 
-    if (process.env.SHOW_SQL_LOG === 'on') {
-      Log.v('[SQL]:', this.driver.format(prepare, holders));
-    }
     const result = await this.driver.execute(prepare, holders);
 
     if (result.affectedRows !== data.length) {
@@ -223,14 +236,11 @@ export class Table {
       );
     }
 
-    // 保存操作结果
-    this._lastOperationResult = {
+    return this.recordResult({
       type: 'insert',
       affectedRows: result.affectedRows,
       insertId: result.insertId,
-    };
-
-    return this._lastOperationResult;
+    });
   }
 
   /**
@@ -250,25 +260,19 @@ export class Table {
   }): Promise<OperationResult> {
     const { where, order, limit } = params;
 
-    const { prepare, holders } = this.dialect.buildDelete({
+    const { prepare, holders } = this.builder.buildDelete({
       table: this.tableName,
       where,
       order,
       limit,
     });
 
-    if (process.env.SHOW_SQL_LOG === 'on') {
-      Log.v('[SQL]:', this.driver.format(prepare, holders));
-    }
     const result = await this.driver.execute(prepare, holders);
 
-    // 保存操作结果
-    this._lastOperationResult = {
+    return this.recordResult({
       type: 'delete',
       affectedRows: result.affectedRows,
-    };
-
-    return this._lastOperationResult;
+    });
   }
 
   /**
@@ -288,7 +292,7 @@ export class Table {
   }): Promise<number> {
     const { where, join, groupBy, having } = params || {};
 
-    const { prepare, holders } = this.dialect.buildCount({
+    const { prepare, holders } = this.builder.buildCount({
       table: this.tableName,
       where,
       join,
@@ -296,9 +300,6 @@ export class Table {
       having,
     });
 
-    if (process.env.SHOW_SQL_LOG === 'on') {
-      Log.v('[SQL]:', this.driver.format(prepare, holders));
-    }
     const result = await this.driver.query<{ total_num: number }>(
       prepare,
       holders,
@@ -327,7 +328,7 @@ export class Table {
     const { data, where, order, limit } = params;
 
     try {
-      const { prepare, holders } = this.dialect.buildUpdate({
+      const { prepare, holders } = this.builder.buildUpdate({
         table: this.tableName,
         data,
         where,
@@ -335,26 +336,19 @@ export class Table {
         limit,
       });
 
-      if (process.env.SHOW_SQL_LOG === 'on') {
-        Log.v('[SQL]:', this.driver.format(prepare, holders));
-      }
       const result = await this.driver.execute(prepare, holders);
 
-      // 保存操作结果
-      this._lastOperationResult = {
+      return this.recordResult({
         type: 'update',
         affectedRows: result.affectedRows,
-      };
-
-      return this._lastOperationResult;
+      });
     } catch (error) {
       // 如果没有字段可更新，返回 affectedRows 为 0
       if (error instanceof Error && error.message === 'No fields to update') {
-        this._lastOperationResult = {
+        return this.recordResult({
           type: 'update',
           affectedRows: 0,
-        };
-        return this._lastOperationResult;
+        });
       }
       throw error;
     }
@@ -366,7 +360,7 @@ export class Table {
    * 如果记录存在（根据唯一键判断）则更新，不存在则插入。
    * 使用 MySQL 的 INSERT ... ON DUPLICATE KEY UPDATE 语法，保证原子性。
    *
-   * 注意：目前仅支持 MySQL，其他数据库需要在 dialect 中实现。
+   * uniqueKeys 仅用于排除更新字段；任意唯一索引冲突都会触发更新。
    *
    * @param params - UPSERT 参数
    * @returns 操作结果（对象始终为 truthy，可直接用于 if 判断）
@@ -425,7 +419,6 @@ export class Table {
    * - 0: 记录存在但数据无变化（不会报错）
    *
    * @throws {Error} 如果 uniqueKeys 为空或不在 data 中
-   * @throws {Error} 如果当前数据库类型不支持 UPSERT
    */
   public async upsert(params: {
     data: Record<string, any>;
@@ -445,35 +438,23 @@ export class Table {
       }
     }
 
-    const { prepare, holders } = this.dialect.buildUpsert({
+    const { prepare, holders } = this.builder.buildUpsert({
       table: this.tableName,
       data,
       uniqueKeys,
       updateData,
     });
 
-    if (process.env.SHOW_SQL_LOG === 'on') {
-      Log.v('[SQL]:', this.driver.format(prepare, holders));
-    }
     const result = await this.driver.execute(prepare, holders);
 
-    const action =
-      result.action ||
-      (this.dialect.type === 'mysql'
-        ? result.affectedRows === 1
-          ? 'insert'
-          : 'update'
-        : undefined);
+    const action = result.affectedRows === 1 ? 'insert' : 'update';
 
-    // 保存操作结果
-    this._lastOperationResult = {
+    return this.recordResult({
       type: 'upsert',
       action,
       affectedRows: result.affectedRows,
       insertId: result.insertId,
-    };
-
-    return this._lastOperationResult;
+    });
   }
 
   /**
@@ -487,14 +468,11 @@ export class Table {
    * - exists() 比 get() !== null 更高效（不需要返回完整数据）
    */
   public async exists(where?: Where): Promise<boolean> {
-    const { prepare, holders } = this.dialect.buildExists({
+    const { prepare, holders } = this.builder.buildExists({
       table: this.tableName,
       where,
     });
 
-    if (process.env.SHOW_SQL_LOG === 'on') {
-      Log.v('[SQL]:', this.driver.format(prepare, holders));
-    }
     const result = await this.driver.query(prepare, holders);
 
     return result.length > 0;

@@ -1,16 +1,14 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Table } from './database/Table';
-import { Database } from './database/Database';
-import type { TransactionResult } from './database/Database';
-import { DatabaseConfig } from './database';
+import { Database, Table } from './mysql';
+import type { DatabaseConfig, ResultHeader, TransactionResult } from './mysql';
 
 /**
  * MySQL 服务入口类
  */
 @Injectable()
 export class MySQLService implements OnModuleDestroy {
-  constructor(protected readonly config: ConfigService) {
+  constructor(private readonly config: ConfigService) {
     // 注意：数据库连接采用懒加载模式
     // 只有在实际使用时才会创建连接，且会自动缓存
     // 无需在构造函数中预初始化
@@ -192,21 +190,18 @@ export class MySQLService implements OnModuleDestroy {
   /**
    * 执行原始 SQL 查询
    *
-   * 支持任意 SQL 语句，包括 SELECT、INSERT、UPDATE、DELETE 等。
+   * 用于 SELECT 等返回行集的语句，写入请使用 execute()。
    * 使用占位符可以防止 SQL 注入攻击。
    *
    * @param statement - SQL 语句，支持 "数据库名::SQL" 格式
    * @param holders - 占位符参数数组
    * @param separator - 分隔符，默认 "::"
-   * @returns
-   *   - SELECT 返回查询结果数组
-   *   - INSERT/UPDATE/DELETE 返回 ResultSetHeader（包含 affectedRows, insertId 等）
+   * @returns 查询结果数组
    *
    * 注意事项：
    * - 始终使用占位符 `?` 代替直接拼接变量，避免 SQL 注入
-   * - SELECT 查询返回数组，INSERT/UPDATE/DELETE 返回 ResultSetHeader
    * - SQL 语句会自动 trim 去除首尾空格
-   * - 如果开启了 MYSQL_LOG=on，会自动打印格式化的 SQL 日志
+   * - 如果开启了 SHOW_SQL_LOG=on，会自动打印格式化的 SQL 日志
    */
   public async query<T = any>(
     statement: string,
@@ -216,6 +211,22 @@ export class MySQLService implements OnModuleDestroy {
     const [dbName, sql] = this.stateParse(statement, separator);
     const db = this.database(dbName);
     return db.query<T>(sql.trim(), holders);
+  }
+
+  /**
+   * 执行原始写入命令，复用当前数据库的事务连接。
+   * @param statement SQL 语句，支持“数据库名::SQL”格式
+   * @param holders 占位参数
+   * @param separator 库名分隔符，默认“::”
+   * @returns 影响行数及插入 ID
+   */
+  public async execute(
+    statement: string,
+    holders?: any[],
+    separator = '::',
+  ): Promise<ResultHeader> {
+    const [dbName, sql] = this.stateParse(statement, separator);
+    return this.database(dbName).execute(sql.trim(), holders);
   }
 
   /**
@@ -260,7 +271,7 @@ export class MySQLService implements OnModuleDestroy {
    * - 事务内抛出的任何错误都会导致自动回滚
    * - 回调函数可以是同步或异步的
    * - 事务会在回调函数完成后自动提交
-   * - 跨数据库事务需要分别执行（MySQL 不支持跨库事务）
+   * - 不同 Database 实例不共享事务；同一连接可操作同服务器上的多个 InnoDB 库
    */
   public async transaction<T = any>(
     callback: () => TransactionResult<T>,

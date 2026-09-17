@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { mock } from 'node:test';
-import { MySQLDriver } from 'src/services/base/database/drivers/MySQLDriver';
+import { MySQLDriver } from 'src/services/base/mysql';
 import { Redis } from 'src/services/base/redis/Redis';
 
 /** 验证响应丢失时不会透明重放已经执行的数据库命令。 */

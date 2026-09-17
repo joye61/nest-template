@@ -10,9 +10,9 @@
   },
   "scripts": {
     "build": "nest build",
-    "test": "npm run test:compatibility && npm run test:database:sqlite && npm run test:mutex-lock && npm run test:command-safety && npm run test:captcha",
-    "test:compatibility": "cross-env NODE_ENV=test DATABASE_TYPE=sqlite SQLITE_URL_DEFAULT=sqlite::memory: ts-node -r tsconfig-paths/register scripts/test-compatibility.ts",
-    "test:database:sqlite": "ts-node -r tsconfig-paths/register scripts/test-database-sqlite.ts",
+    "test": "npm run test:compatibility && npm run test:mysql && npm run test:mutex-lock && npm run test:command-safety && npm run test:captcha",
+    "test:compatibility": "cross-env NODE_ENV=test MYSQL_URL_DEFAULT=mysql://root@127.0.0.1:3306/compatibility ts-node -r tsconfig-paths/register scripts/test-compatibility.ts",
+    "test:mysql": "ts-node -r tsconfig-paths/register scripts/test-mysql.ts",
     "test:mutex-lock": "ts-node -r tsconfig-paths/register scripts/test-mutex-lock.ts",
     "test:command-safety": "ts-node -r tsconfig-paths/register scripts/test-command-safety.ts",
     "test:captcha": "ts-node scripts/test-captcha.ts",

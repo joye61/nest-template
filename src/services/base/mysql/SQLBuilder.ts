@@ -1,13 +1,11 @@
 import {
-  BaseDialect,
   ValueHolders,
   SQLHolderValue,
   SQLValue,
   SQLValueArray,
   UpsertParams,
-} from './BaseDialect';
-import {
   Where,
+  JoinDefinition,
   FieldValue,
   UpdateFieldValue,
   Operator,
@@ -19,33 +17,288 @@ import {
   GroupBy,
   Having,
   OrderBy,
-} from '../type';
-import type { DatabaseType } from '../drivers/IDatabaseDriver';
+} from './type';
 
 /**
  * 字段记录类型
  */
 type FieldRecord = Record<string, FieldValue>;
+/** MySQL SQL 构建器，负责条件、占位参数及 CRUD 语句生成。 */
+export class SQLBuilder {
+  /**
+   * 转换值为 SQL 占位符值
+   *
+   * Date 对象直接透传给 mysql2，由 mysql2 根据连接池的 timezone 配置进行
+   * 时区感知的格式化，避免手动转换 ISO 字符串导致的时区偏差。
+   *
+   * @param value 原始值
+   * @returns SQL 占位符值
+   */
+  private toSQLHolder(value: SQLValue): SQLHolderValue {
+    return typeof value === 'boolean'
+      ? Number(value)
+      : (value as SQLHolderValue);
+  }
 
-/**
- * 问号占位符 SQL 方言的公共实现
- * 提供 MySQL 与 SQLite 共享的查询条件、排序、关联和分组逻辑
- */
-export abstract class QuestionMarkDialect extends BaseDialect {
-  abstract readonly type: DatabaseType;
+  /**
+   * 构建 SELECT 语句
+   */
+  buildSelect(params: {
+    table: string;
+    fields?: string;
+    where?: Where;
+    order?: OrderBy;
+    limit?: number;
+    offset?: number;
+    join?: JoinDefinition;
+    groupBy?: GroupBy;
+    having?: Having;
+  }): ValueHolders {
+    const {
+      table,
+      fields = '*',
+      where,
+      order,
+      limit,
+      offset = 0,
+      join,
+      groupBy,
+      having,
+    } = params;
+
+    let sql = `SELECT ${fields} FROM ${this.escapeIdentifier(table)}`;
+    const holders: SQLHolderValue[] = [];
+
+    // JOIN
+    const joinStr = this.createJoin(join);
+    if (joinStr) {
+      sql += joinStr;
+    }
+
+    // WHERE
+    const whereResult = this.createWhere(where);
+    if (whereResult.prepare) {
+      sql += ` WHERE ${whereResult.prepare}`;
+      holders.push(...whereResult.holders);
+    }
+
+    // GROUP BY
+    const groupByStr = this.createGroupBy(groupBy);
+    if (groupByStr) {
+      sql += ` GROUP BY ${groupByStr}`;
+    }
+
+    // HAVING
+    const havingResult = this.createHaving(having);
+    if (havingResult.prepare) {
+      sql += ` HAVING ${havingResult.prepare}`;
+      holders.push(...havingResult.holders);
+    }
+
+    // ORDER BY
+    const orderStr = this.createOrder(order);
+    if (orderStr) {
+      sql += ` ORDER BY ${orderStr}`;
+    }
+
+    // LIMIT & OFFSET
+    if (limit && limit > 0) {
+      sql += this.buildLimitOffset(limit, offset);
+    }
+
+    return { prepare: sql, holders };
+  }
+
+  /**
+   * 构建 INSERT 语句
+   */
+  buildInsert(params: {
+    table: string;
+    data: Array<Record<string, any>>;
+  }): ValueHolders {
+    const { table, data } = params;
+
+    if (!data || data.length === 0) {
+      throw new Error('Insert data cannot be empty');
+    }
+
+    const fields = Object.keys(data[0]);
+    const escapedFields = fields.map((f) => this.escapeIdentifier(f));
+
+    let sql = `INSERT INTO ${this.escapeIdentifier(table)} (${escapedFields.join(', ')}) VALUES`;
+
+    const holders: SQLHolderValue[] = [];
+    const valueSets: string[] = [];
+
+    for (const row of data) {
+      const placeholders: string[] = [];
+      for (const field of fields) {
+        placeholders.push('?');
+        holders.push(this.toSQLHolder(row[field]));
+      }
+      valueSets.push(`(${placeholders.join(', ')})`);
+    }
+
+    sql += ` ${valueSets.join(', ')}`;
+
+    return { prepare: sql, holders };
+  }
+
+  /**
+   * 构建 UPDATE 语句
+   */
+  buildUpdate(params: {
+    table: string;
+    data: Record<string, any>;
+    where?: Where;
+    order?: OrderBy;
+    limit?: number;
+  }): ValueHolders {
+    const { table, data, where, order, limit } = params;
+
+    const holders: SQLHolderValue[] = [];
+    const parts: string[] = [];
+
+    for (const key in data) {
+      const result = this.createDataFilter(key, data[key]);
+      if (result.prepare) {
+        parts.push(result.prepare);
+        holders.push(...result.holders);
+      }
+    }
+
+    if (parts.length === 0) {
+      throw new Error('No fields to update');
+    }
+
+    let sql = `UPDATE ${this.escapeIdentifier(table)} SET ${parts.join(', ')}`;
+
+    // WHERE
+    const whereResult = this.createWhere(where);
+    if (whereResult.prepare) {
+      sql += ` WHERE ${whereResult.prepare}`;
+      holders.push(...whereResult.holders);
+    }
+
+    // ORDER BY
+    const orderStr = this.createOrder(order);
+    if (orderStr) {
+      sql += ` ORDER BY ${orderStr}`;
+    }
+
+    // LIMIT
+    if (limit && limit > 0) {
+      sql += ` LIMIT ${limit}`;
+    }
+
+    return { prepare: sql, holders };
+  }
+
+  /**
+   * 构建 DELETE 语句
+   */
+  buildDelete(params: {
+    table: string;
+    where?: Where;
+    order?: OrderBy;
+    limit?: number;
+  }): ValueHolders {
+    const { table, where, order, limit } = params;
+
+    let sql = `DELETE FROM ${this.escapeIdentifier(table)}`;
+    const holders: SQLHolderValue[] = [];
+
+    // WHERE
+    const whereResult = this.createWhere(where);
+    if (whereResult.prepare) {
+      sql += ` WHERE ${whereResult.prepare}`;
+      holders.push(...whereResult.holders);
+    }
+
+    // ORDER BY
+    const orderStr = this.createOrder(order);
+    if (orderStr) {
+      sql += ` ORDER BY ${orderStr}`;
+    }
+
+    // LIMIT
+    if (limit && limit > 0) {
+      sql += ` LIMIT ${limit}`;
+    }
+
+    return { prepare: sql, holders };
+  }
+
+  /**
+   * 构建 COUNT 语句
+   */
+  buildCount(params: {
+    table: string;
+    where?: Where;
+    join?: JoinDefinition;
+    groupBy?: GroupBy;
+    having?: Having;
+  }): ValueHolders {
+    const { table, where, join, groupBy, having } = params;
+
+    let sql = `SELECT COUNT(*) as ${this.escapeIdentifier('total_num')} FROM ${this.escapeIdentifier(table)}`;
+    const holders: SQLHolderValue[] = [];
+
+    // JOIN
+    const joinStr = this.createJoin(join);
+    if (joinStr) {
+      sql += joinStr;
+    }
+
+    // WHERE
+    const whereResult = this.createWhere(where);
+    if (whereResult.prepare) {
+      sql += ` WHERE ${whereResult.prepare}`;
+      holders.push(...whereResult.holders);
+    }
+
+    // GROUP BY
+    const groupByStr = this.createGroupBy(groupBy);
+    if (groupByStr) {
+      sql += ` GROUP BY ${groupByStr}`;
+    }
+
+    // HAVING
+    const havingResult = this.createHaving(having);
+    if (havingResult.prepare) {
+      sql += ` HAVING ${havingResult.prepare}`;
+      holders.push(...havingResult.holders);
+    }
+
+    return { prepare: sql, holders };
+  }
+
+  /**
+   * 构建 EXISTS 语句
+   */
+  buildExists(params: { table: string; where?: Where }): ValueHolders {
+    const { table, where } = params;
+
+    let sql = `SELECT 1 FROM ${this.escapeIdentifier(table)}`;
+    const holders: SQLHolderValue[] = [];
+
+    // WHERE
+    const whereResult = this.createWhere(where);
+    if (whereResult.prepare) {
+      sql += ` WHERE ${whereResult.prepare}`;
+      holders.push(...whereResult.holders);
+    }
+
+    sql += ' LIMIT 1';
+
+    return { prepare: sql, holders };
+  }
 
   /**
    * MySQL 使用反引号转义标识符
    */
   escapeIdentifier(identifier: string): string {
     return `\`${identifier}\``;
-  }
-
-  /**
-   * MySQL 使用 ? 作为占位符
-   */
-  getPlaceholder(): string {
-    return '?';
   }
 
   /**
@@ -470,9 +723,7 @@ export abstract class QuestionMarkDialect extends BaseDialect {
    * createOrder({ field1: 'invalid' }) // ❌ TypeScript 类型错误
    * ```
    */
-  createOrder(
-    order?: OrderBy | null,
-  ): string {
+  createOrder(order?: OrderBy | null): string {
     if (!order) {
       return '';
     }
@@ -532,7 +783,9 @@ export abstract class QuestionMarkDialect extends BaseDialect {
 
       // 如果是字符串，默认为 INNER JOIN
       if (typeof joinDef === 'string') {
-        parts.push(` INNER JOIN ${this.escapeIdentifier(tableName)} ON ${joinDef}`);
+        parts.push(
+          ` INNER JOIN ${this.escapeIdentifier(tableName)} ON ${joinDef}`,
+        );
         continue;
       }
 
@@ -540,9 +793,11 @@ export abstract class QuestionMarkDialect extends BaseDialect {
       const { type = 'INNER', on, using } = joinDef;
 
       // 验证 JOIN 类型
-      const validTypes: Array<JoinType> = ['INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS'];
+      const validTypes: Array<JoinType> = ['INNER', 'LEFT', 'RIGHT', 'CROSS'];
       if (!validTypes.includes(type)) {
-        throw new Error(`Invalid JOIN type: ${type}. Valid types are: ${validTypes.join(', ')}`);
+        throw new Error(
+          `Invalid JOIN type: ${type}. Valid types are: ${validTypes.join(', ')}`,
+        );
       }
 
       // 构建 JOIN 子句
@@ -557,9 +812,13 @@ export abstract class QuestionMarkDialect extends BaseDialect {
       // 优先使用 USING 语法
       if (using !== undefined) {
         if (!Array.isArray(using) || using.length === 0) {
-          throw new Error(`JOIN "using" must be a non-empty array for table "${tableName}"`);
+          throw new Error(
+            `JOIN "using" must be a non-empty array for table "${tableName}"`,
+          );
         }
-        const usingFields = using.map(field => this.escapeIdentifier(field)).join(', ');
+        const usingFields = using
+          .map((field) => this.escapeIdentifier(field))
+          .join(', ');
         joinClause += ` USING (${usingFields})`;
         parts.push(joinClause);
         continue;
@@ -573,7 +832,9 @@ export abstract class QuestionMarkDialect extends BaseDialect {
       }
 
       // 如果既没有 ON 也没有 USING（且不是 CROSS JOIN），抛出错误
-      throw new Error(`JOIN on table "${tableName}" requires either "on" or "using" condition (or use type: "CROSS")`);
+      throw new Error(
+        `JOIN on table "${tableName}" requires either "on" or "using" condition (or use type: "CROSS")`,
+      );
     }
 
     return parts.join('');
@@ -592,7 +853,7 @@ export abstract class QuestionMarkDialect extends BaseDialect {
       // 如果字段包含点号（表名.字段名），需要分别转义
       if (groupBy.includes('.')) {
         const parts = groupBy.split('.');
-        return parts.map(part => this.escapeIdentifier(part)).join('.');
+        return parts.map((part) => this.escapeIdentifier(part)).join('.');
       }
       return this.escapeIdentifier(groupBy);
     }
@@ -602,14 +863,16 @@ export abstract class QuestionMarkDialect extends BaseDialect {
       if (groupBy.length === 0) {
         return '';
       }
-      return groupBy.map(field => {
+      return groupBy
+        .map((field) => {
           // 如果字段包含点号（表名.字段名），需要分别转义
           if (field.includes('.')) {
             const parts = field.split('.');
-          return parts.map(part => this.escapeIdentifier(part)).join('.');
+            return parts.map((part) => this.escapeIdentifier(part)).join('.');
           }
           return this.escapeIdentifier(field);
-      }).join(', ');
+        })
+        .join(', ');
     }
 
     return '';
@@ -659,19 +922,12 @@ export abstract class QuestionMarkDialect extends BaseDialect {
   /**
    * MySQL LIMIT 语法
    */
-  protected buildLimitOffset(limit: number, offset: number): string {
+  private buildLimitOffset(limit: number, offset: number): string {
     if (offset > 0) {
       return ` LIMIT ${offset}, ${limit}`;
     }
     return ` LIMIT ${limit}`;
   }
-}
-
-/**
- * MySQL 方言实现
- */
-export class MySQLDialect extends QuestionMarkDialect {
-  readonly type: DatabaseType = 'mysql';
 
   /**
    * 构建 MySQL UPSERT (INSERT ... ON DUPLICATE KEY UPDATE)

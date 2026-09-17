@@ -5,12 +5,7 @@ import {
   createPool,
 } from 'mysql2/promise';
 import { AsyncLocalStorage } from 'async_hooks';
-import {
-  IDatabaseDriver,
-  ResultHeader,
-  DatabaseConfig,
-  TransactionCallback,
-} from './IDatabaseDriver';
+import { ResultHeader, DatabaseConfig, TransactionCallback } from './type';
 import { Log } from 'src/common/Log';
 
 /**
@@ -49,9 +44,7 @@ import { Log } from 'src/common/Log';
  * }
  * ```
  */
-export class MySQLDriver implements IDatabaseDriver {
-  readonly type = 'mysql' as const;
-
+export class MySQLDriver {
   private pool: Pool;
   private connection?: PoolConnection; // 事务连接（仅 begin/commit/rollback 手动模式使用）
   private readonly config: DatabaseConfig | string; // 保存配置用于重连
@@ -59,7 +52,9 @@ export class MySQLDriver implements IDatabaseDriver {
   private rebuildLock: Promise<void> | null = null; // 重建锁（防止并发重建）
 
   /** 异步上下文存储，用于 transaction() 并发隔离 */
-  private readonly transactionStore = new AsyncLocalStorage<PoolConnection>();
+  private readonly transactionStore = new AsyncLocalStorage<{
+    connection?: PoolConnection;
+  }>();
 
   /**
    * 创建 MySQL 连接池，支持连接字符串或配置对象。
@@ -123,39 +118,28 @@ export class MySQLDriver implements IDatabaseDriver {
     };
 
     if (typeof config === 'string') {
-      // 使用连接字符串
-      // 注意：mysql2 的机制是显式选项优先于 URI 参数，因此 poolConfig 中的
-      // timezone、connectionLimit 等默认值会覆盖 URI 中对应的参数。
-      // 如需自定义这些选项，请改用配置对象形式。
+      const url = new URL(config);
+      if (url.protocol !== 'mysql:') {
+        throw new Error('连接地址必须使用 mysql: 协议');
+      }
+      for (const [key, value] of Object.entries(poolConfig)) {
+        if (!url.searchParams.has(key)) {
+          url.searchParams.set(key, String(value));
+        }
+      }
       return createPool({
-        uri: config,
-        ...poolConfig,
+        uri: url.toString(),
+        flags: ['-FOUND_ROWS'],
       });
     }
 
     // 使用配置对象，支持用户覆盖默认值
     return createPool({
-      host: config.host,
-      port: config.port || 3306,
-      user: config.user,
-      password: config.password,
-      database: config.database,
-
-      // 应用默认配置，但允许用户覆盖
       ...poolConfig,
-      enableKeepAlive: config.enableKeepAlive !== false,
-      connectTimeout: config.connectTimeout || poolConfig.connectTimeout,
-      connectionLimit: config.connectionLimit || poolConfig.connectionLimit,
-      timezone: config.timezone || poolConfig.timezone, // 允许用户覆盖时区
-
-      // 其他用户自定义配置（排除不兼容的选项）
-      ...(config.waitForConnections !== undefined && {
-        waitForConnections: config.waitForConnections,
-      }),
-      ...(config.queueLimit !== undefined && { queueLimit: config.queueLimit }),
-      ...(config.keepAliveInitialDelay !== undefined && {
-        keepAliveInitialDelay: config.keepAliveInitialDelay,
-      }),
+      ...Object.fromEntries(
+        Object.entries(config).filter(([, value]) => value !== undefined),
+      ),
+      flags: ['-FOUND_ROWS'],
     });
   }
 
@@ -325,15 +309,15 @@ export class MySQLDriver implements IDatabaseDriver {
   /**
    * 执行查询操作（SELECT）
    *
-  * 连接错误直接抛出，避免响应丢失时重复执行有副作用的 SQL。
+   * 连接错误直接抛出，避免响应丢失时重复执行有副作用的 SQL。
    *
    * @param sql - SQL 查询语句
    * @param params - 占位符参数
    * @returns 查询结果数组
    */
   async query<T = any>(sql: string, params?: any[]): Promise<T[]> {
-    const executor =
-      this.transactionStore.getStore() || this.connection || this.pool;
+    const executor = this.getExecutor();
+    this.logQuery(sql, params);
     const result = await executor.query(sql, params);
     return result[0] as T[];
   }
@@ -341,15 +325,15 @@ export class MySQLDriver implements IDatabaseDriver {
   /**
    * 执行命令操作（INSERT, UPDATE, DELETE）
    *
-  * 连接错误直接抛出，是否重试由业务根据幂等性决定。
+   * 连接错误直接抛出，是否重试由业务根据幂等性决定。
    *
    * @param sql - SQL 命令语句
    * @param params - 占位符参数
    * @returns 执行结果 { affectedRows, insertId? }
    */
   async execute(sql: string, params?: any[]): Promise<ResultHeader> {
-    const executor =
-      this.transactionStore.getStore() || this.connection || this.pool;
+    const executor = this.getExecutor();
+    this.logQuery(sql, params);
     const result = await executor.execute(sql, params);
     const header = result[0] as ResultSetHeader;
 
@@ -379,6 +363,27 @@ export class MySQLDriver implements IDatabaseDriver {
    */
   format(sql: string, params?: any[]): string {
     return this.pool.format(sql, params);
+  }
+
+  /** 所有业务 SQL 在驱动执行入口统一记录，避免上层重复记录。 */
+  private logQuery(sql: string, params?: any[]): void {
+    if (process.env.SHOW_SQL_LOG === 'on') {
+      Log.v('[SQL]:', this.format(sql, params));
+    }
+  }
+
+  /** 统一选择执行连接，拒绝在已结束的事务上下文中继续操作。 */
+  private getExecutor(): Pool | PoolConnection {
+    const context = this.transactionStore.getStore();
+    if (context) {
+      if (!context.connection) {
+        throw new Error(
+          '事务上下文已结束，请在事务回调内等待所有数据库操作完成',
+        );
+      }
+      return context.connection;
+    }
+    return this.connection || this.pool;
   }
 
   /**
@@ -495,7 +500,7 @@ export class MySQLDriver implements IDatabaseDriver {
   async ping(): Promise<boolean> {
     try {
       await this.retryOnConnectionError(async () => {
-        await this.pool.query('SELECT 1');
+        await this.getExecutor().query('SELECT 1');
       });
       return true;
     } catch {
@@ -527,24 +532,33 @@ export class MySQLDriver implements IDatabaseDriver {
   async transaction<T>(callback: TransactionCallback<T>): Promise<T> {
     // 如果已在事务上下文中，直接执行回调（加入外层事务）
     if (this.transactionStore.getStore()) {
+      this.getExecutor();
       return await callback();
     }
 
-    const conn = await this.pool.getConnection();
+    const connection = await this.pool.getConnection();
+    const context: { connection?: PoolConnection } = { connection };
     try {
-      await conn.beginTransaction();
-      const result = await this.transactionStore.run(conn, () => callback());
-      await conn.commit();
+      await connection.beginTransaction();
+      const result = await this.transactionStore.run(context, async () => {
+        try {
+          return await callback();
+        } finally {
+          context.connection = undefined;
+        }
+      });
+      await connection.commit();
       return result;
     } catch (error) {
       try {
-        await conn.rollback();
+        await connection.rollback();
       } catch {
         // 忽略回滚错误（连接可能已断开）
       }
       throw error;
     } finally {
-      conn.release();
+      context.connection = undefined;
+      connection.release();
     }
   }
 }

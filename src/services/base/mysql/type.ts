@@ -1,3 +1,32 @@
+import type { PoolOptions } from 'mysql2/promise';
+
+/** MySQL 连接配置，直接使用 mysql2 的选项类型。 */
+export type DatabaseConfig = Pick<
+  PoolOptions,
+  | 'host'
+  | 'port'
+  | 'user'
+  | 'password'
+  | 'database'
+  | 'charset'
+  | 'timezone'
+  | 'connectionLimit'
+  | 'waitForConnections'
+  | 'queueLimit'
+  | 'enableKeepAlive'
+  | 'keepAliveInitialDelay'
+  | 'connectTimeout'
+>;
+
+/** MySQL 写入结果；批量插入时 insertId 为首条记录的自增 ID。 */
+export type ResultHeader = {
+  affectedRows: number;
+  insertId?: number;
+};
+
+/** 支持同步或异步的事务回调。 */
+export type TransactionCallback<T> = () => T | Promise<T>;
+
 /**
  * 数据库查询操作符类型定义
  * 类似 MongoDB/Prisma 的类型友好查询语法
@@ -85,10 +114,7 @@ export interface UpdateOperators<T = any> {
  * 所有查询操作符的联合类型
  */
 export type QueryOperators<T = any> =
-  | ComparisonOperators<T>
-  | RangeOperators<T>
-  | StringOperators
-  | NullOperators;
+  ComparisonOperators<T> | RangeOperators<T> | StringOperators | NullOperators;
 
 /**
  * 字段查询条件
@@ -201,7 +227,7 @@ export type UpdateOperator = keyof UpdateOperators;
 /**
  * JOIN 类型
  */
-export type JoinType = 'INNER' | 'LEFT' | 'RIGHT' | 'FULL' | 'CROSS';
+export type JoinType = 'INNER' | 'LEFT' | 'RIGHT' | 'CROSS';
 
 /**
  * JOIN 配置
@@ -291,3 +317,37 @@ export type OrderDirection =
  * ```
  */
 export type OrderBy = Record<string, OrderDirection>;
+
+/**
+ * SQL 值类型
+ */
+export type SQLValue = string | number | boolean | Date | null | undefined;
+
+/**
+ * SQL 占位符值类型
+ * 包含 Date 类型，让 mysql2 根据连接池的 timezone 配置自动处理时区转换
+ */
+export type SQLHolderValue = string | number | Date;
+
+/**
+ * SQL 值数组类型
+ */
+export type SQLValueArray = Array<string | number | boolean | Date>;
+
+/**
+ * 查询结果类型
+ */
+export type ValueHolders = {
+  prepare: string;
+  holders: Array<SQLHolderValue>;
+};
+
+/**
+ * UPSERT 构建参数
+ */
+export interface UpsertParams {
+  table: string;
+  data: Record<string, any>;
+  uniqueKeys: string[];
+  updateData?: Record<string, any>;
+}
